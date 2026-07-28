@@ -45,6 +45,30 @@ See [INSTALL.md](INSTALL.md) and [CONFIGURATION.md](CONFIGURATION.md) for the
 complete setup. For phone access, use a trusted LAN/VPN or a TLS reverse proxy;
 do not bind to all interfaces without authentication and network controls.
 
+## Hermes compatibility targets
+
+There are two distinct validation targets:
+
+- `upstream-clean`: a separately installed Hermes WebUI revision tested against
+  the documented routes and external-chat configuration. The current upstream
+  README says normal WebUI chat runs in-process; an external chat transport
+  requires the supported gateway mode. See
+  [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md).
+- `Hermes OS Cat deployment`: an operator-specific WebUI deployment can be
+  smoke-tested separately with `scripts/verify-hermes-upstream.mjs`. Its local
+  endpoint behavior is not a public default, and no private address or secret
+  is part of this repository.
+
+The read-only preflight is:
+
+```text
+node scripts/verify-hermes-upstream.mjs --base-url <test-webui-url>
+```
+
+It does not create a session, start a prompt, or cancel a stream. Those checks
+require the explicit `--allow-write-test` flag and are documented in
+[docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md).
+
 ## Supported actions
 
 Hermes actions depend on the installed Hermes WebUI contract and include health,
@@ -66,6 +90,9 @@ There is no desktop surface or workspace-launch action in this public tree.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [ASSETS.md](ASSETS.md)
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md)
+- [docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md)
 - [OPEN_SOURCE_PREPARATION_REPORT.md](OPEN_SOURCE_PREPARATION_REPORT.md)
 
 ## License

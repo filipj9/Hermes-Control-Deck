@@ -3,10 +3,13 @@
   "version": "0.1.0-alpha.0",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node apps/server/src/server.mjs",
     "start": "node apps/server/src/server.mjs",
-    "check": "node --check apps/server/src/server.mjs && node --check apps/server/src/infrastructure/EventBus.mjs && node --check apps/server/src/infrastructure/config.mjs && node --check apps/server/src/adapters/hermes/HermesApiClient.mjs && node --check apps/server/src/adapters/hermes/HermesRuntimeAdapter.mjs && node --check apps/server/src/adapters/codex/CodexCliClient.mjs && node --check apps/server/src/adapters/codex/CodexRuntimeAdapter.mjs && node --check apps/web/app.js && node --check apps/web/service-worker.js",
+    "check": "node --check apps/server/src/server.mjs && node --check apps/server/src/infrastructure/EventBus.mjs && node --check apps/server/src/infrastructure/config.mjs && node --check apps/server/src/adapters/hermes/HermesApiClient.mjs && node --check apps/server/src/adapters/hermes/HermesRuntimeAdapter.mjs && node --check apps/server/src/adapters/codex/CodexCliClient.mjs && node --check apps/server/src/adapters/codex/CodexRuntimeAdapter.mjs && node --check apps/web/app.js && node --check apps/web/service-worker.js && node --check scripts/verify-hermes-upstream.mjs",
     "audit": "node scripts/audit-panel.mjs --codex-surface cli",
     "test": "node --test tests/**/*.test.mjs",
     "generate:token": "node scripts/generate-token.mjs"
