@@ -14,9 +14,9 @@ The private production repository remains outside the change set. No Desktop
 bridge, CDP launcher, renderer automation, Micro event, private IP, password,
 watchdog, or production runtime state is part of this tree.
 
-## Two Hermes validation targets
+## Hermes validation
 
-### Target 1: upstream-clean
+### Required target: upstream-clean
 
 The public adapter was compared with the current upstream repositories and
 their MIT notices. The exact revisions inspected are recorded in
@@ -27,15 +27,13 @@ this adapter. However, the upstream README states that normal WebUI chat runs
 the agent in-process. External chat requires the supported gateway mode. Route
 names alone therefore do not prove that a clean installation is compatible.
 
-### Target 2: Hermes OS Cat deployment
+### Optional target: Hermes OS Cat deployment
 
 The operator has an existing Hermes OS Cat deployment whose chat, approval and
-Kanban behavior has already been validated outside this public-copy audit. It
-is a separate compatibility target, not a public default and not a source of
-private configuration. Run the preflight against that deployment only when the
-operator explicitly supplies the target URL and credentials through local
-environment variables. Do not record its private address or secrets in this
-repository.
+Kanban behavior is used daily. It may be tested as an additional compatibility
+target, but it is not a public dependency, not the required release target, and
+not a source of public configuration. Its URL and credentials must remain local
+to the operator environment and must never be recorded in this repository.
 
 ## Completed in this stage
 
