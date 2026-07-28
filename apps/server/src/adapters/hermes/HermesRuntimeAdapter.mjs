@@ -40,27 +40,39 @@ export class HermesRuntimeAdapter {
 
   async preflight() {
     const checks = [
-      { name: "profiles", routes: [`${this.config.apiPrefix}/profiles`, "/profiles"] },
+      { name: "auth-status", routes: [`${this.config.apiPrefix}/auth/status`], auth: false },
+      { name: "profiles", routes: [`${this.config.apiPrefix}/profiles`] },
       { name: "sessions", routes: [`${this.config.apiPrefix}/sessions/search?limit=1`, `${this.config.apiPrefix}/sessions`] },
-      { name: "models", routes: [`${this.config.apiPrefix}/models`, `${this.config.apiPrefix}/v1/models`, "/models"] },
-      { name: "tasks", routes: [`${this.config.apiPrefix}/kanban/tasks?status=all&sort=updated`, `${this.config.apiPrefix}/tasks`] }
+      { name: "models", routes: [`${this.config.apiPrefix}/models`] },
+      { name: "kanban", routes: [`${this.config.apiPrefix}/kanban/boards`, `${this.config.apiPrefix}/kanban/tasks?status=all&sort=updated`] },
+      { name: "chat", method: "POST", routes: [`${this.config.apiPrefix}/chat/start`, `${this.config.apiPrefix}/chat`], safe: false, reason: "write-required" },
+      { name: "stream", method: "GET", routes: [`${this.config.apiPrefix}/chat/stream`], safe: false, reason: "stream-id-required" },
+      { name: "cancel", method: "GET", routes: [`${this.config.apiPrefix}/chat/cancel`], safe: false, reason: "stream-id-required" },
+      { name: "approvals", method: "GET", routes: [`${this.config.apiPrefix}/approval/pending`], safe: false, reason: "session-id-required" },
+      { name: "approval-respond", method: "POST", routes: [`${this.config.apiPrefix}/approval/respond`], safe: false, reason: "write-required" }
     ];
     const results = await Promise.all(checks.map(async (check) => {
+      if (check.safe === false) {
+        return {
+          ...check,
+          ok: null,
+          tested: false,
+          status: "not-tested",
+          error: null
+        };
+      }
       try {
-        const result = await this.client.firstJson(check.routes);
-        return { ...check, ok: true, route: result.route };
+        const result = await this.client.firstJson(check.routes, { auth: check.auth !== false });
+        return { ...check, ok: true, tested: true, status: "available", route: result.route };
       } catch (error) {
-        return { ...check, ok: false, error: error.message };
+        return { ...check, ok: false, tested: true, status: "unavailable", error: error.message };
       }
     }));
     return { source: this.source, checkedAt: new Date().toISOString(), results };
   }
 
   async listAgents() {
-    const result = await this.client.firstJson([
-      `${this.config.apiPrefix}/profiles`,
-      "/profiles"
-    ]);
+    const result = await this.client.firstJson([`${this.config.apiPrefix}/profiles`]);
     const agents = toHermesAgents(result.data);
     this.eventBus.publish({
       source: this.source,
@@ -76,10 +88,7 @@ export class HermesRuntimeAdapter {
 
     try {
       result = await this.client.firstJson([
-        `${this.config.apiPrefix}/kanban/tasks?status=all&sort=updated`,
-        "/kanban/tasks?status=all&sort=updated",
-        `${this.config.apiPrefix}/tasks`,
-        "/tasks"
+        `${this.config.apiPrefix}/kanban/tasks?status=all&sort=updated`
       ]);
       tasks = toHermesTasks(result.data);
     } catch (error) {
@@ -129,11 +138,7 @@ export class HermesRuntimeAdapter {
   async listConversations() {
     const result = await this.client.firstJson([
       `${this.config.apiPrefix}/sessions/search?limit=50`,
-      "/sessions/search?limit=50",
-      `${this.config.apiPrefix}/sessions`,
-      "/sessions",
-      `${this.config.apiPrefix}/conversations`,
-      "/conversations"
+      `${this.config.apiPrefix}/sessions`
     ]);
     return toHermesConversations(result.data);
   }
@@ -291,7 +296,8 @@ export class HermesRuntimeAdapter {
     if (action === "metrics") {
       const result = await this.client.firstJson([
         `${this.config.apiPrefix}/system/metrics`,
-        "/system/metrics",
+        `${this.config.apiPrefix}/system/health`,
+        `${this.config.apiPrefix}/health/agent`,
         "/health"
       ], { auth: action !== "status" });
       this.eventBus.publish(toMetricEvent(this.source, result.data));
@@ -299,9 +305,7 @@ export class HermesRuntimeAdapter {
     }
     if (action === "models") {
       const result = await this.client.firstJson([
-        `${this.config.apiPrefix}/models`,
-        `${this.config.apiPrefix}/v1/models`,
-        "/models"
+        `${this.config.apiPrefix}/models`
       ]);
       this.eventBus.publish({
         source: this.source,

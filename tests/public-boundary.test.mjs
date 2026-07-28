@@ -32,9 +32,11 @@ test("public source has no private bridge imports or machine-specific network de
   const sourceRoots = [path.join(root, "apps"), path.join(root, "config"), path.join(root, "scripts")];
   const content = sourceRoots.flatMap((directory) => textFiles(directory)).map((filePath) => fs.readFileSync(filePath, "utf8")).join("\n");
 
-  for (const forbidden of ["CodexDesktopBridge", "CodexApiClient", "CodexAppServerClient", "100.69.167.105", "100.120.237.15", "C:\\Users\\CEM"]) {
+  for (const forbidden of ["CodexDesktopBridge", "CodexApiClient", "CodexAppServerClient"]) {
     assert.equal(content.includes(forbidden), false, forbidden);
   }
+  assert.doesNotMatch(content, /\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[0-1])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}\.\d{1,3}\b/);
+  assert.doesNotMatch(content, /[A-Z]:\\Users\\[^\\\r\n]+/i);
 });
 
 test("public copy ships a template environment only, never a live secret file", () => {
