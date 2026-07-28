@@ -1,0 +1,32 @@
+{
+  "ports": {
+    "api": 4240,
+    "web": 4241,
+    "reserved": [4242, 4243, 4244, 4245, 4246, 4247, 4248, 4249]
+  },
+  "protectedPorts": [
+    4175,
+    4190,
+    5173,
+    8443,
+    8787,
+    8788,
+    8789,
+    8790,
+    8793,
+    8796,
+    10000
+  ],
+  "runtimes": {
+    "hermes": {
+      "enabled": true,
+      "baseUrl": "",
+      "apiPrefix": "/api"
+    },
+    "codex": {
+      "enabled": true,
+      "mode": "cli",
+      "surface": "cli"
+    }
+  }
+}

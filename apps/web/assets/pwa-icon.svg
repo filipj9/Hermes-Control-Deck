@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hermes Control">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="42%" r="72%">
+      <stop offset="0" stop-color="#073b1d"/>
+      <stop offset="0.52" stop-color="#00170a"/>
+      <stop offset="1" stop-color="#000403"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="88" y1="72" x2="424" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#eafff2" stop-opacity="0.36"/>
+      <stop offset="0.38" stop-color="#19ff79" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#001007" stop-opacity="0.92"/>
+    </linearGradient>
+    <filter id="neon" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#000000" flood-opacity="0.72"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="12" flood-color="#19ff79" flood-opacity="0.34"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#000604"/>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="url(#bgGlow)"/>
+  <g opacity="0.38" stroke="#19ff79" stroke-width="1">
+    <path d="M54 118h96m44 0h28m82 0h154M54 382h124m56 0h50m62 0h112"/>
+    <path d="M82 64v90m0 204v90M430 64v98m0 182v104M256 46v62m0 300v58"/>
+    <path d="M84 256h58m228 0h58M256 84v46m0 252v46"/>
+  </g>
+  <g filter="url(#softShadow)">
+    <rect x="78" y="78" width="356" height="356" rx="74" fill="url(#glass)" stroke="#b9ffcd" stroke-opacity="0.45" stroke-width="4"/>
+    <rect x="108" y="108" width="296" height="296" rx="54" fill="#001008" fill-opacity="0.62" stroke="#19ff79" stroke-opacity="0.5" stroke-width="3"/>
+  </g>
+  <g filter="url(#neon)">
+    <path d="M158 183h196M158 256h196M158 329h196" stroke="#19ff79" stroke-width="12" stroke-linecap="round" opacity="0.9"/>
+    <path d="M183 158v196M256 158v196M329 158v196" stroke="#00f5ff" stroke-width="5" stroke-linecap="round" opacity="0.56"/>
+  </g>
+  <g filter="url(#softShadow)">
+    <rect x="158" y="158" width="72" height="72" rx="18" fill="#eafff2"/>
+    <rect x="282" y="158" width="72" height="72" rx="18" fill="#09130d" stroke="#19ff79" stroke-width="5"/>
+    <rect x="158" y="282" width="72" height="72" rx="18" fill="#09130d" stroke="#19ff79" stroke-width="5"/>
+    <rect x="282" y="282" width="72" height="72" rx="18" fill="#eafff2"/>
+  </g>
+  <circle cx="256" cy="256" r="72" fill="#001007" stroke="#19ff79" stroke-width="7" filter="url(#neon)"/>
+  <text x="256" y="247" text-anchor="middle" font-family="Cascadia Mono, Consolas, monospace" font-size="54" font-weight="900" fill="#eafff2" filter="url(#neon)">HC</text>
+  <text x="256" y="291" text-anchor="middle" font-family="Cascadia Mono, Consolas, monospace" font-size="24" font-weight="900" fill="#19ff79">DECK</text>
+  <path d="M116 430h280" stroke="#19ff79" stroke-width="3" stroke-linecap="round" opacity="0.7" filter="url(#neon)"/>
+</svg>

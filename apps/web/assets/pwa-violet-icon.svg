@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hermes Control Violet">
+  <defs>
+    <radialGradient id="violetBg" cx="48%" cy="38%" r="76%">
+      <stop offset="0" stop-color="#3b1a76"/>
+      <stop offset="0.46" stop-color="#16072c"/>
+      <stop offset="1" stop-color="#05020b"/>
+    </radialGradient>
+    <linearGradient id="case" x1="92" y1="54" x2="420" y2="458" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6efff" stop-opacity="0.38"/>
+      <stop offset="0.36" stop-color="#8d58ff" stop-opacity="0.3"/>
+      <stop offset="0.72" stop-color="#1b0638" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#050209"/>
+    </linearGradient>
+    <linearGradient id="keyLight" x1="156" y1="147" x2="224" y2="224" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff8ff"/>
+      <stop offset="0.48" stop-color="#e8d8ff"/>
+      <stop offset="1" stop-color="#7d62bd"/>
+    </linearGradient>
+    <filter id="violetGlow" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.82"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="15" flood-color="#8d58ff" flood-opacity="0.44"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="9" flood-color="#30ff8b" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="#05020b"/>
+  <rect x="15" y="15" width="482" height="482" rx="98" fill="url(#violetBg)"/>
+  <g opacity="0.36" stroke="#8d58ff" stroke-width="1.2">
+    <path d="M56 122h118m44 0h42m72 0h124M56 390h144m38 0h54m52 0h112"/>
+    <path d="M84 64v96m0 204v84M428 64v104m0 186v94M256 44v66m0 294v64"/>
+    <path d="M60 256h76m240 0h76M256 82v54m0 240v54"/>
+  </g>
+  <path d="M48 91c84-48 328-51 416 0" stroke="#d9c5ff" stroke-width="5" stroke-linecap="round" opacity="0.18"/>
+  <path d="M83 426c90 31 250 31 346 0" stroke="#30ff8b" stroke-width="4" stroke-linecap="round" opacity="0.34" filter="url(#violetGlow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="76" y="76" width="360" height="360" rx="76" fill="url(#case)" stroke="#b28cff" stroke-opacity="0.56" stroke-width="4"/>
+    <rect x="104" y="104" width="304" height="304" rx="56" fill="#08020f" stroke="#6f39e8" stroke-opacity="0.72" stroke-width="3"/>
+    <rect x="116" y="116" width="280" height="280" rx="44" fill="#05030a" stroke="#2d144d" stroke-width="3"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="144" y="142" width="78" height="78" rx="18" fill="url(#keyLight)" stroke="#fff8ff" stroke-opacity="0.62" stroke-width="4"/>
+    <rect x="290" y="142" width="78" height="78" rx="18" fill="#160b29" stroke="#8d58ff" stroke-width="5"/>
+    <rect x="144" y="290" width="78" height="78" rx="18" fill="#160b29" stroke="#8d58ff" stroke-width="5"/>
+    <rect x="290" y="290" width="78" height="78" rx="18" fill="url(#keyLight)" stroke="#fff8ff" stroke-opacity="0.62" stroke-width="4"/>
+  </g>
+
+  <circle cx="256" cy="256" r="76" fill="#07020f" stroke="#8d58ff" stroke-width="8" filter="url(#violetGlow)"/>
+  <circle cx="256" cy="256" r="49" fill="#0b0415" stroke="#30ff8b" stroke-width="4" opacity="0.96" filter="url(#violetGlow)"/>
+  <text x="256" y="274" text-anchor="middle" font-family="Cascadia Mono, Consolas, monospace" font-size="68" font-weight="900" fill="#fff6ff" filter="url(#violetGlow)">HC</text>
+  <path d="M226 304h60" stroke="#30ff8b" stroke-width="6" stroke-linecap="round" filter="url(#violetGlow)"/>
+
+  <g filter="url(#violetGlow)" opacity="0.9">
+    <path d="M130 255h68m116 0h68" stroke="#30ff8b" stroke-width="7" stroke-linecap="round"/>
+    <path d="M256 130v68m0 116v68" stroke="#8d58ff" stroke-width="7" stroke-linecap="round"/>
+  </g>
+</svg>
