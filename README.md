@@ -45,19 +45,17 @@ See [INSTALL.md](INSTALL.md) and [CONFIGURATION.md](CONFIGURATION.md) for the
 complete setup. For phone access, use a trusted LAN/VPN or a TLS reverse proxy;
 do not bind to all interfaces without authentication and network controls.
 
-## Hermes compatibility targets
+## Hermes compatibility
 
-There are two distinct validation targets:
+The public release requires a separately installed Hermes WebUI/backend. The
+current upstream README says normal WebUI chat runs in-process; an external
+chat transport requires the supported gateway mode. See
+[docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md).
 
-- `upstream-clean`: a separately installed Hermes WebUI revision tested against
-  the documented routes and external-chat configuration. The current upstream
-  README says normal WebUI chat runs in-process; an external chat transport
-  requires the supported gateway mode. See
-  [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md).
-- `Hermes OS Cat deployment`: an operator-specific WebUI deployment can be
-  smoke-tested separately with `scripts/verify-hermes-upstream.mjs`. Its local
-  endpoint behavior is not a public default, and no private address or secret
-  is part of this repository.
+The author's private Hermes OS Cat deployment is only an optional, separate
+compatibility test target. It is not a dependency, is not bundled, and is not
+required to run Hermes Control. No private address, secret, or OS Cat source
+is part of this repository.
 
 The read-only preflight is:
 

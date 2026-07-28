@@ -4,9 +4,9 @@ This file intentionally records only what the repository can establish.
 
 | Component | Current status |
 |---|---|
-| Node.js | Version must be pinned before alpha release; `package.json` currently has no `engines` declaration. |
+| Node.js | Node.js 20 or newer; the requirement is declared in `package.json`. |
 | Hermes WebUI/backend (`upstream-clean`) | Routes were compared against `nesquena/hermes-webui` master revision `f6265cc96293bc9ae16ab8d8e3d8bc2dc76d231f`; clean external-chat behavior still needs a real gateway-mode test. |
-| Hermes OS Cat deployment | Separate operator-specific target. Its endpoint behavior must be tested with the read-only preflight and must not be treated as the upstream default. |
+| Hermes OS Cat deployment | Optional private compatibility target only. It is not required, bundled, or treated as the public default. |
 | Codex CLI | Requires `exec --json` JSONL behavior and the supported approval stdin contract. Exact minimum version must be verified with a fixture. |
 | Windows | Process-tree cleanup uses `taskkill.exe`; test on every supported Windows release. |
 | Linux/macOS | CLI process cleanup path exists but requires platform CI before support is claimed. |
