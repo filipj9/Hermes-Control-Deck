@@ -8,13 +8,12 @@ This report describes the isolated public copy prepared for a first alpha releas
 
 ## 1. Scope and isolation
 
-Private production source, read-only reference:
+Private production source was a sibling directory used only as a read-only
+reference during preparation. Its author-specific absolute path is intentionally
+omitted from this public report.
 
-`C:\Users\CEM\Documents\Codex\2026-07-23\kontekst-buduj-w-asny-ekosystem-ai\work\codex-control`
-
-Public working copy:
-
-`C:\Users\CEM\Documents\Codex\2026-07-23\kontekst-buduj-w-asny-ekosystem-ai\work\hermes-control-open-source`
+The public working copy is the repository containing this report. It is a
+separate sibling of the private production copy.
 
 Isolation evidence:
 
@@ -197,7 +196,7 @@ CSRF is reduced by same-site HttpOnly control sessions, same-origin default beha
 
 ## 10. Hermes dependency and licensing
 
-The public copy does not vendor or copy Hermes WebUI implementation. It calls the configured API through `HermesApiClient`. The exact upstream repository, license, and minimum compatible version are **NOT KNOWN from this repository alone** and must be verified from the upstream Hermes distribution before a public release.
+The public copy does not vendor or copy Hermes WebUI implementation. It calls the configured API through `HermesApiClient`. The upstream repositories and MIT notices are now recorded in `docs/UPSTREAM_LICENSE_AUDIT.md` and `THIRD_PARTY_NOTICES.md`. A clean external-chat compatibility run is still required before release.
 
 Required later verification:
 
@@ -232,7 +231,7 @@ Implemented local tests in `tests/`:
 - `codex-cli.test.mjs`: stdin JSON execution arguments, no app/CDP argument, executable/workdir discovery.
 - `public-boundary.test.mjs`: excluded private files, no private imports/IP/path, no live `.env`.
 
-Observed result during preparation: **10 passed, 0 failed**. Key source files also passed Node syntax checks.
+Observed result during preparation: **12 passed, 0 failed**. Key source files also passed Node syntax checks. `tests/hermes-contract.test.mjs` uses a local mock server and covers auth/re-login, profiles, sessions, models, Kanban, new session, SSE, approval, and cancel. `tests/codex-cli-contract.test.mjs` covers fixture JSONL, stderr, approval, completion, and STOP mapping.
 
 Required CI for `v0.1.0-alpha`:
 
@@ -258,6 +257,10 @@ The public copy includes:
 - `COMPATIBILITY.md`: version assumptions and verification points.
 - `CONTRIBUTING.md`: contribution rules and CLI-only boundary.
 - `ASSETS.md`: asset inventory, marks, and disclaimer.
+- `THIRD_PARTY_NOTICES.md`: upstream MIT notices and branding disclaimer.
+- `docs/UPSTREAM_LICENSE_AUDIT.md`: upstream repository, revision, license, and route evidence.
+- `docs/CLEAN_MACHINE_TEST.md`: non-private clean-machine validation procedure.
+- `scripts/verify-hermes-upstream.mjs`: read-only endpoint preflight; write tests require an explicit flag.
 - `TROUBLESHOOTING.md`: setup and runtime diagnostics.
 - `LICENSE`: project license placeholder for legal review.
 - `.env.example`: neutral configuration template without live secrets.
