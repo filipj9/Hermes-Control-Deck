@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta id="themeColor" name="theme-color" content="#0b0415" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Hermes Control" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Hermes Control</title>
+    <script>
+      (() => {
+        const theme = "violet";
+        document.documentElement.dataset.theme = theme;
+        window.__HERMES_CONTROL_THEME__ = theme;
+      })();
+    </script>
+    <link id="manifestLink" rel="manifest" href="/manifest-violet.webmanifest" />
+    <link id="faviconLink" rel="icon" href="/assets/pwa-violet-v2-icon-192.png" type="image/png" />
+    <link id="appleIconLink" rel="apple-touch-icon" href="/assets/pwa-violet-v2-icon-180.png" />
+    <script>
+      (() => {
+        document.querySelector("#themeColor")?.setAttribute("content", "#0b0415");
+        document.querySelector("#manifestLink")?.setAttribute("href", "/manifest-violet.webmanifest");
+        document.querySelector("#faviconLink")?.setAttribute("href", "/assets/pwa-violet-v2-icon-192.png");
+        document.querySelector("#faviconLink")?.setAttribute("type", "image/png");
+        document.querySelector("#appleIconLink")?.setAttribute("href", "/assets/pwa-violet-v2-icon-180.png");
+        const splash = document.createElement("link");
+        splash.rel = "apple-touch-startup-image";
+        splash.href = "/assets/pwa-violet-v2-splash-1206x2622.png";
+        splash.media = "(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3)";
+        document.head.append(splash);
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=73" />
+  </head>
+  <body>
+    <div class="boot-loader" id="bootLoader" aria-label="Hermes Control loading">
+      <div class="boot-device" aria-hidden="true">
+        <img class="boot-icon-violet" src="/assets/pwa-violet-v2-icon-512.png" alt="" />
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <strong>Hermes Control</strong>
+      <small>LINKING CODEX + HERMES</small>
+    </div>
+
+    <div class="matrix-backdrop" aria-hidden="true"></div>
+
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">AI MICRO DECK</p>
+          <h1>Hermes Control</h1>
+        </div>
+        <div class="system-led" id="systemLed">
+          <span></span>
+          <strong>BOOT</strong>
+        </div>
+      </header>
+
+      <section class="studio-board" id="studioBoard" aria-label="Recording monitor">
+        <div class="studio-agents" id="studioAgents"></div>
+        <div class="studio-main">
+          <p class="eyebrow">LIVE CONTROL SIGNAL</p>
+          <h2 id="studioHeadline">Waiting for phone command</h2>
+          <p id="studioSubline">Open Hermes Control on the phone and press a deck key.</p>
+          <div class="studio-meter" id="studioMeter"></div>
+        </div>
+        <div class="studio-feed" id="studioFeed"></div>
+      </section>
+
+      <section class="micro-stage" aria-label="Hermes Control hardware deck">
+        <div class="runtime-switch" role="tablist" aria-label="Runtime">
+          <button class="runtime-tab is-active" data-runtime="codex">
+            <span class="runtime-logo codex-logo">
+              <img class="codex-original" src="/assets/codex-logo.svg" alt="" onerror="this.hidden = true" />
+              <span class="codex-core">C</span>
+            </span>
+            <span class="runtime-copy">
+              <b>Codex</b>
+              <small>local</small>
+            </span>
+          </button>
+          <button class="runtime-tab" data-runtime="hermes">
+            <span class="runtime-logo hermes-logo">
+              <img src="/assets/hermes-logo.png" alt="" />
+            </span>
+            <span class="runtime-copy">
+              <b>Hermes</b>
+              <small>remote</small>
+            </span>
+          </button>
+        </div>
+
+        <article class="micro-device" id="microDevice" data-active="codex">
+          <span class="screw screw-tl" aria-hidden="true"></span>
+          <span class="screw screw-tr" aria-hidden="true"></span>
+          <span class="screw screw-bl" aria-hidden="true"></span>
+          <span class="screw screw-br" aria-hidden="true"></span>
+          <span class="side-label left">Hermes Control | 2026</span>
+          <span class="side-label right">Codex + Hermes</span>
+          <span class="top-mark" aria-hidden="true">^</span>
+          <span class="bottom-mark">Let's build.</span>
+
+          <div class="inner-plate">
+            <div class="hardware-grid" id="hardwareDeck"></div>
+          </div>
+        </article>
+
+        <section class="agent-keys" aria-label="Agent status keys" id="agentKeys"></section>
+
+        <section class="prompt-dock" aria-label="Command slot">
+          <button class="prompt-trigger" id="promptTrigger" type="button" data-prompt-open aria-label="Open command prompt">
+            <span class="prompt-trigger-led"></span>
+            <span class="prompt-trigger-copy">
+              <b>Command slot</b>
+              <small id="promptPreview">tap to type</small>
+            </span>
+            <span class="prompt-trigger-caret" aria-hidden="true">+</span>
+          </button>
+        </section>
+
+        <button class="tilt-toggle" id="tiltToggle" type="button" aria-pressed="false">
+          <span class="tilt-led" aria-hidden="true"></span>
+          <b>WŁĄCZ TILT</b>
+        </button>
+      </section>
+
+      <section class="signal-strip" aria-label="Runtime status" id="runtimeStrip"></section>
+
+      <section class="live-log" aria-label="Runtime live log">
+        <div class="log-track" id="liveLog"></div>
+      </section>
+
+      <section class="stream-panel" aria-label="Live assistant stream">
+        <div class="stream-head">
+          <div>
+            <p class="eyebrow">LIVE SIGNAL</p>
+            <h2>Activity</h2>
+          </div>
+          <div class="stream-stats" id="streamStats">
+            <span>idle</span>
+            <span>0 tok</span>
+            <span>0.0 tps</span>
+          </div>
+        </div>
+        <div class="stream-console" id="streamConsole">
+          <div class="stream-empty">Waiting for prompt stream</div>
+        </div>
+      </section>
+
+      <section class="readout-grid" aria-label="Unified state">
+        <article class="readout" data-readout="agents">
+          <div class="readout-head">
+            <div>
+              <h2>Agents</h2>
+              <div class="section-switch" data-section-switch="agents" aria-label="Agents runtime filter">
+                <button class="section-tab is-active" data-section-filter="agents" data-source="codex" aria-label="Codex agents">
+                  <span class="mini-logo codex-mini">
+                    <img class="codex-original-mini" src="/assets/codex-logo.svg" alt="" onerror="this.hidden = true" />
+                    <span>C</span>
+                  </span>
+                </button>
+                <button class="section-tab" data-section-filter="agents" data-source="hermes" aria-label="Hermes agents">
+                  <span class="mini-logo hermes-mini"><img src="/assets/hermes-logo.png" alt="" /></span>
+                </button>
+              </div>
+            </div>
+            <button class="mini" data-refresh="agents">SYNC</button>
+          </div>
+          <div class="list" id="agentsList"></div>
+        </article>
+
+        <article class="readout" data-readout="tasks">
+          <div class="readout-head">
+            <div>
+              <h2>Tasks</h2>
+              <div class="section-switch" data-section-switch="tasks" aria-label="Tasks runtime filter">
+                <button class="section-tab is-active" data-section-filter="tasks" data-source="codex" aria-label="Codex tasks">
+                  <span class="mini-logo codex-mini">
+                    <img class="codex-original-mini" src="/assets/codex-logo.svg" alt="" onerror="this.hidden = true" />
+                    <span>C</span>
+                  </span>
+                </button>
+                <button class="section-tab" data-section-filter="tasks" data-source="hermes" aria-label="Hermes tasks">
+                  <span class="mini-logo hermes-mini"><img src="/assets/hermes-logo.png" alt="" /></span>
+                </button>
+              </div>
+            </div>
+            <button class="mini" data-refresh="tasks">SYNC</button>
+          </div>
+          <div class="list" id="tasksList"></div>
+        </article>
+
+        <article class="readout" data-readout="sessions">
+          <div class="readout-head">
+            <div>
+              <h2>Sessions</h2>
+              <div class="section-switch" data-section-switch="sessions" aria-label="Sessions runtime filter">
+                <button class="section-tab is-active" data-section-filter="sessions" data-source="codex" aria-label="Codex sessions">
+                  <span class="mini-logo codex-mini">
+                    <img class="codex-original-mini" src="/assets/codex-logo.svg" alt="" onerror="this.hidden = true" />
+                    <span>C</span>
+                  </span>
+                </button>
+                <button class="section-tab" data-section-filter="sessions" data-source="hermes" aria-label="Hermes sessions">
+                  <span class="mini-logo hermes-mini"><img src="/assets/hermes-logo.png" alt="" /></span>
+                </button>
+              </div>
+            </div>
+            <button class="mini" data-refresh="sessions">SYNC</button>
+          </div>
+          <div class="list" id="sessionsList"></div>
+        </article>
+
+        <article class="readout" data-readout="approvals">
+          <div class="readout-head">
+            <div>
+              <h2>Approvals</h2>
+              <div class="section-switch" data-section-switch="approvals" aria-label="Approvals runtime filter">
+                <button class="section-tab is-active" data-section-filter="approvals" data-source="codex" aria-label="Codex approvals">
+                  <span class="mini-logo codex-mini">
+                    <img class="codex-original-mini" src="/assets/codex-logo.svg" alt="" onerror="this.hidden = true" />
+                    <span>C</span>
+                  </span>
+                </button>
+                <button class="section-tab" data-section-filter="approvals" data-source="hermes" aria-label="Hermes approvals">
+                  <span class="mini-logo hermes-mini"><img src="/assets/hermes-logo.png" alt="" /></span>
+                </button>
+              </div>
+            </div>
+            <button class="mini" data-refresh="approvals">SYNC</button>
+          </div>
+          <div class="list" id="approvalsList"></div>
+        </article>
+
+        <article class="readout event-readout" data-readout="events">
+          <div class="readout-head">
+            <h2>Events</h2>
+            <button class="mini" data-refresh="events">PULL</button>
+          </div>
+          <div class="timeline" id="eventTimeline"></div>
+        </article>
+      </section>
+    </main>
+
+    <main class="premium-shell" id="premiumShell" hidden>
+      <header class="premium-frame-head">
+        <button class="premium-frame-button" type="button" data-action="status" data-control-label="STATUS" aria-label="Check status">×</button>
+        <div class="premium-frame-title">Hermes Control</div>
+        <button class="premium-frame-button" type="button" data-action="events" data-control-label="EVENTS" aria-label="Open events">•••</button>
+      </header>
+
+      <section class="premium-hero" aria-label="Hermes Control">
+        <div>
+          <p class="premium-eyebrow">AI MICRO DECK</p>
+          <h1>HERMES<br /><span>CONTROL</span></h1>
+        </div>
+        <div class="premium-live" id="premiumSystemLed" data-state="boot">
+          <span></span>
+          <strong>LIVE</strong>
+        </div>
+      </section>
+
+      <section class="premium-agent-panel" id="premiumAgentKeys" aria-label="Agent status and runtime switch"></section>
+
+      <article class="premium-device" id="premiumMicroDevice" data-active="codex">
+        <span class="premium-screw premium-screw-tl" aria-hidden="true"></span>
+        <span class="premium-screw premium-screw-tr" aria-hidden="true"></span>
+        <span class="premium-screw premium-screw-bl" aria-hidden="true"></span>
+        <span class="premium-screw premium-screw-br" aria-hidden="true"></span>
+        <div class="premium-control-surface">
+          <div class="premium-hardware-grid" id="premiumHardwareDeck"></div>
+        </div>
+      </article>
+
+      <button class="premium-tilt" id="premiumTiltToggle" type="button" aria-pressed="false">
+        <span aria-hidden="true"></span>
+        <b>WŁĄCZ TILT</b>
+      </button>
+
+      <nav class="premium-bottom-nav" aria-label="Control deck sections">
+        <button type="button" class="premium-nav-button" data-inspector="events" data-action="events" data-control-label="LOGS">
+          <span class="premium-nav-icon">▤</span>
+          <span><b>LOGS</b><small>live signal</small></span><i>›</i>
+        </button>
+        <button type="button" class="premium-nav-button" data-inspector="sessions" data-action="sessions" data-control-label="SESSIONS">
+          <span class="premium-nav-icon">∿</span>
+          <span><b>SESSIONS</b><small>active runtime</small></span><i>›</i>
+        </button>
+        <button type="button" class="premium-nav-button" data-inspector="tasks" data-action="kanban" data-control-label="TASKS">
+          <span class="premium-nav-icon">✓</span>
+          <span><b>TASKS</b><small>queued work</small></span><i>›</i>
+        </button>
+      </nav>
+
+      <section class="premium-telemetry" aria-label="Live telemetry">
+        <div class="premium-runtime-strip" id="premiumRuntimeStrip"></div>
+        <div class="premium-live-log" id="premiumLiveLog"></div>
+      </section>
+
+      <section class="premium-stream" data-stream-panel aria-label="Live response stream">
+        <header class="premium-stream-head">
+          <div><p class="premium-eyebrow">LIVE SIGNAL</p><h2>Runtime output</h2></div>
+          <div class="premium-stream-stats" id="premiumStreamStats"><span>idle</span><span>0 tok</span><span>0.0 tps</span></div>
+        </header>
+        <div class="premium-stream-console" id="premiumStreamConsole"><div class="premium-stream-empty">Waiting for runtime signal</div></div>
+      </section>
+
+      <section class="premium-inspector" id="premiumInspector" hidden aria-label="Runtime details">
+        <header class="premium-inspector-head">
+          <div><p class="premium-eyebrow">CONTROL DATA</p><h2 id="premiumInspectorTitle">Logs</h2></div>
+          <button type="button" class="premium-close" data-inspector-close aria-label="Close details">×</button>
+        </header>
+        <div class="premium-inspector-grid">
+          <article class="premium-readout" data-readout="agents"><h3>Agents</h3><div class="premium-list" id="premiumAgentsList"></div></article>
+          <article class="premium-readout" data-readout="tasks"><h3>Tasks</h3><div class="premium-list" id="premiumTasksList"></div></article>
+          <article class="premium-readout" data-readout="sessions"><h3>Sessions</h3><div class="premium-list" id="premiumSessionsList"></div></article>
+          <article class="premium-readout" data-readout="approvals"><h3>Approvals</h3><div class="premium-list" id="premiumApprovalsList"></div></article>
+          <article class="premium-readout premium-readout-wide" data-readout="events"><h3>Events</h3><div class="premium-timeline" id="premiumEventTimeline"></div></article>
+        </div>
+      </section>
+
+      <section class="premium-utility" id="premiumStudioBoard" hidden>
+        <div id="premiumStudioAgents"></div><h2 id="premiumStudioHeadline"></h2><p id="premiumStudioSubline"></p><div id="premiumStudioMeter"></div><div id="premiumStudioFeed"></div>
+      </section>
+    </main>
+
+    <div class="premium-prompt-overlay" id="premiumPromptOverlay" hidden>
+      <div class="premium-prompt-backdrop" data-prompt-close></div>
+      <section class="premium-prompt-sheet" role="dialog" aria-modal="true" aria-labelledby="premiumPromptTitle">
+        <div class="premium-prompt-grip" aria-hidden="true"></div>
+        <header class="premium-prompt-head">
+          <div><p class="premium-eyebrow">COMMAND SLOT</p><h2 id="premiumPromptTitle">Prompt</h2></div>
+          <button class="premium-close" type="button" data-prompt-close aria-label="Close prompt">×</button>
+        </header>
+        <div class="premium-prompt-runtime" id="premiumPromptRuntimeTabs"></div>
+        <section class="premium-prompt-strip" aria-label="Command input">
+          <div class="premium-prompt-shell">
+            <span class="premium-prompt-prefix">&gt;</span>
+            <textarea id="premiumPromptInput" rows="1" placeholder="type a command" inputmode="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="send" spellcheck="true"></textarea>
+            <span class="premium-prompt-cursor" aria-hidden="true"></span>
+          </div>
+        </section>
+        <div class="premium-prompt-actions">
+          <button class="premium-mic" type="button" data-prompt-mic aria-label="Focus keyboard input">⌁</button>
+          <button class="premium-run" type="button" id="premiumPromptRun" data-prompt-submit><span>RUN</span></button>
+        </div>
+      </section>
+    </div>
+
+    <div class="prompt-overlay" id="promptOverlay" hidden>
+      <div class="prompt-backdrop" data-prompt-close></div>
+      <section class="prompt-sheet" role="dialog" aria-modal="true" aria-labelledby="promptSheetTitle">
+        <div class="prompt-grip" aria-hidden="true"></div>
+        <header class="prompt-sheet-head">
+          <div>
+            <p class="eyebrow">COMMAND INPUT</p>
+            <h2 id="promptSheetTitle">Prompt</h2>
+          </div>
+          <button class="prompt-close" type="button" data-prompt-close aria-label="Close prompt">x</button>
+        </header>
+
+        <div class="prompt-runtime-row" id="promptRuntimeTabs" aria-label="Prompt runtime"></div>
+
+        <section class="prompt-strip" aria-label="Command input">
+          <div class="prompt-shell">
+            <div class="prompt-ghost" aria-hidden="true">
+              <span class="prompt-prefix">&gt;</span>
+              <span class="prompt-type">build landing page</span>
+              <span class="prompt-cursor"></span>
+            </div>
+            <textarea id="promptInput" rows="1" placeholder="" inputmode="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="send" spellcheck="true"></textarea>
+          </div>
+        </section>
+
+        <div class="prompt-actions">
+          <button class="prompt-mic" type="button" data-prompt-mic aria-label="Focus dictation input">
+            <span aria-hidden="true">mic</span>
+          </button>
+          <button class="prompt-run" type="button" id="promptRun" data-prompt-submit>
+            <span>RUN</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/app.js?v=73"></script>
+  </body>
+</html>
