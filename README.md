@@ -2,6 +2,14 @@
 
 > A mobile-first PWA control deck for Hermes WebUI and local Codex CLI runtimes.
 
+<p align="center">
+  <img src="docs/media/hermes-control-banner.png" alt="Hermes Control mobile control deck banner" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/media/hermes-control-deck-mockup.png" alt="Hermes Control deck mockup" width="380">
+</p>
+
 Hermes Control is an event-driven control surface for monitoring and operating
 AI runtimes from a browser, including a phone. It provides one normalized UI
 for Hermes WebUI and Codex CLI while keeping runtime-specific integrations
