@@ -2,3 +2,4 @@
 node_modules/
 outputs/
 data/*.log
+backups/

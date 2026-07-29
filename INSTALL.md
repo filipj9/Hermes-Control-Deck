@@ -9,8 +9,9 @@
 - a workspace directory accessible to the Codex CLI process;
 - a trusted local network or VPN for phone access.
 
-Exact upstream Hermes and CLI versions must be confirmed before a public alpha
-release. The current repository deliberately does not guess them.
+The supported baseline is Node.js 20 or newer. Exact Hermes WebUI and Codex
+CLI compatibility still depends on the runtime versions and must be recorded
+in the clean-machine test report before a public alpha release.
 
 ## Setup
 
@@ -29,6 +30,10 @@ CODEX_WORKDIR=C:\path\to\workspace
 
 `CODEX_EXECUTABLE` may be empty when `codex` is discoverable through PATH. An
 absolute executable path is recommended for reproducible deployments.
+
+The default server port is `4240`; change `CONTROL_SERVER_PORT` when another
+local service already uses it. Keep `CODEX_WORKDIR` on a workspace intended
+for Codex CLI runs and never publish `.env`.
 
 Start:
 

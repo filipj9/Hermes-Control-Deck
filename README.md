@@ -73,9 +73,12 @@ Hermes actions depend on the installed Hermes WebUI contract and include health,
 profiles, sessions, prompt streaming, cancellation, approvals, models, and
 Kanban/task reads where the backend exposes them.
 
-Codex CLI actions include prompt, JSONL streaming, task status, stop, approval,
-deny, new task, continue, and in-memory conversation display. CLI session
-history is not promised to survive a Hermes Control restart.
+Codex CLI actions include prompt, JSONL streaming, task status, stop, deny,
+new task, continue, and in-memory conversation display. Approval controls are
+implemented for a runtime that emits approval events, but live approval
+delivery is not guaranteed by every `codex exec --json` version and must be
+verified against the installed CLI before relying on it. CLI session history
+is not promised to survive a Hermes Control restart.
 
 There is no desktop surface or workspace-launch action in this public tree.
 

@@ -79,6 +79,48 @@ test("Codex CLI JSONL fixture maps approval, stdout events, stderr, completion, 
   assert.equal((await adapter.listTasks())[0].status, "cancelled");
 });
 
+test("Codex STOP wins a completion event race and publishes cancelled", async () => {
+  let callbacks;
+  const eventBus = new EventBus();
+  const fakeCli = {
+    isAvailable: () => true,
+    async describeRuntime() {
+      return { available: true, executable: "fixture-codex", version: "fixture", workdirExists: true, activeRuns: 1 };
+    },
+    start(prompt, options) {
+      callbacks = options;
+      return { pid: 5000, args: ["fixture", "--json"], startedAt: new Date().toISOString() };
+    },
+    async stop() {
+      callbacks.onEvent({ type: "turn.completed", text: "should be ignored after STOP" });
+      callbacks.onExit({ code: 0, signal: null, timedOut: false });
+      return true;
+    }
+  };
+
+  const adapter = new CodexRuntimeAdapter({
+    workdir: process.cwd(),
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+    profile: "default",
+    model: "",
+    runTimeoutMs: 1000,
+    stopTimeoutMs: 1000,
+    allowConcurrentRuns: false,
+    maxPromptChars: 1000
+  }, eventBus);
+  adapter.cli = fakeCli;
+
+  const run = await adapter.sendMessage({ content: "fixture stop race" });
+  const stopped = await adapter.cancelTask(run.task.id);
+  assert.equal(stopped.stopped, true);
+  assert.equal((await adapter.listTasks())[0].status, "cancelled");
+
+  const completed = eventBus.list(100).filter((event) => event.type === "task.completed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].payload.status, "cancelled");
+});
+
 async function waitFor(predicate) {
   const deadline = Date.now() + 1000;
   while (Date.now() < deadline) {

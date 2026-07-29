@@ -24,3 +24,7 @@ Configuration is read from `.env` and process environment. Never commit `.env`.
 
 The public adapter always uses the CLI surface. Desktop/CDP settings are not
 valid configuration in this repository.
+
+`CODEX_WORKDIR` is intentionally empty in `.env.example` because it is a
+machine-specific path. Set it to an existing workspace before enabling Codex.
+The default control port is `4240`; use another port if it is already bound.

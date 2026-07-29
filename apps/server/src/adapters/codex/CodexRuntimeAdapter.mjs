@@ -90,7 +90,16 @@ export class CodexRuntimeAdapter {
       || this.tasks.find((item) => ["running", "waiting_approval"].includes(item.status));
     if (!task) return { ok: true, metadata: { noop: true } };
 
-    const stopped = await this.cli.stop(task.id, this.config.stopTimeoutMs);
+    task.status = "cancelling";
+    task.updatedAt = new Date().toISOString();
+
+    let stopped;
+    try {
+      stopped = await this.cli.stop(task.id, this.config.stopTimeoutMs);
+    } catch (error) {
+      this.finishCliTask(task.id, "failed", { error: error.message || "Codex process could not be stopped." });
+      throw error;
+    }
     if (!stopped) {
       this.finishCliTask(task.id, "failed", { error: "Codex process could not be stopped." });
       throw new Error("Codex process could not be stopped.");
@@ -277,7 +286,7 @@ export class CodexRuntimeAdapter {
 
   handleCliEvent(taskId, event) {
     const task = this.tasks.find((item) => item.id === taskId);
-    if (!task) return;
+    if (!task || task.status === "cancelling") return;
     task.updatedAt = new Date().toISOString();
 
     const approval = approvalFromCliEvent(task, event);
@@ -327,7 +336,11 @@ export class CodexRuntimeAdapter {
 
   handleCliExit(taskId, result) {
     const task = this.tasks.find((item) => item.id === taskId);
-    if (!task || !["running", "queued", "waiting_approval"].includes(task.status)) return;
+    if (!task) return;
+    if (task.status === "cancelling") {
+      return this.finishCliTask(taskId, "cancelled", { ...result, stopped: true });
+    }
+    if (!["running", "queued", "waiting_approval"].includes(task.status)) return;
     if (task.status === "waiting_approval") return;
     this.finishCliTask(taskId, result.code === 0 ? "completed" : "failed", result);
   }
@@ -343,7 +356,8 @@ export class CodexRuntimeAdapter {
     task.progress = status === "completed" ? 100 : task.progress;
     task.updatedAt = new Date().toISOString();
     this.cancelPendingApprovals(taskId, status);
-    this.eventBus.publish({ source: this.source, type: status === "completed" ? "task.completed" : "task.failed", taskId, conversationId: task.conversationId, payload: { ...payload, status, task } });
+    const eventType = ["completed", "cancelled"].includes(status) ? "task.completed" : "task.failed";
+    this.eventBus.publish({ source: this.source, type: eventType, taskId, conversationId: task.conversationId, payload: { ...payload, status, task } });
   }
 
   recordApproval(task, approval) {
