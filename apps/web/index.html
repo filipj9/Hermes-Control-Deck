@@ -35,6 +35,19 @@
     <link rel="stylesheet" href="/styles.css?v=73" />
   </head>
   <body>
+    <div class="auth-overlay" id="authOverlay" hidden>
+      <section class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+        <p class="auth-kicker">LOCAL CONTROL PLANE</p>
+        <h2 id="authTitle">Connect Hermes Control</h2>
+        <p class="auth-copy">Enter the local control token from your <code>.env</code> file.</p>
+        <form id="authForm">
+          <label for="authTokenInput">Control token</label>
+          <input id="authTokenInput" type="password" autocomplete="off" spellcheck="false" required />
+          <p class="auth-error" id="authError" role="alert" hidden></p>
+          <button class="auth-submit" id="authSubmit" type="submit">CONNECT</button>
+        </form>
+      </section>
+    </div>
     <div class="boot-loader" id="bootLoader" aria-label="Hermes Control loading">
       <div class="boot-device" aria-hidden="true">
         <img class="boot-icon-violet" src="/assets/pwa-violet-v2-icon-512.png" alt="" />

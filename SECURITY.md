@@ -21,3 +21,8 @@ device authentication.
 
 Known alpha limitations include in-memory task/conversation state and no
 multi-user authorization model. Do not expose this version as a shared service.
+
+The Codex approval buttons can only act on approval events emitted by the
+installed CLI adapter. Some `codex exec --json` versions do not emit that
+event in every sandbox/policy combination; verify the installed version before
+using this as an unattended approval control.

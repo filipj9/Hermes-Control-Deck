@@ -119,6 +119,10 @@ const el = {
   promptPreview: document.querySelector("#promptPreview"),
   promptRun: document.querySelector("#promptRun"),
   promptRuntimeTabs: document.querySelector("#promptRuntimeTabs"),
+  authOverlay: document.querySelector("#authOverlay"),
+  authForm: document.querySelector("#authForm"),
+  authTokenInput: document.querySelector("#authTokenInput"),
+  authError: document.querySelector("#authError"),
   agentsList: document.querySelector("#agentsList"),
   tasksList: document.querySelector("#tasksList"),
   sessionsList: document.querySelector("#sessionsList"),
@@ -232,12 +236,14 @@ async function boot() {
   bindControls();
   bindPrompt();
   initTilt();
-  connectEvents();
-  startLiveRefresh();
   registerServiceWorker();
   if (isVioletTheme()) {
     markAppReady(650);
-    ensureControlSession().then(() => refreshAll()).catch((error) => {
+    ensureControlSession().then(async () => {
+      connectEvents();
+      startLiveRefresh();
+      await refreshAll();
+    }).catch((error) => {
       addLocalEvent(state.activeRuntime, "runtime.error", error.message || "Refresh failed.");
       setLed("error", "ERR");
     });
@@ -246,6 +252,8 @@ async function boot() {
 
   try {
     await ensureControlSession();
+    connectEvents();
+    startLiveRefresh();
     await refreshAll();
   } finally {
     markAppReady();
@@ -926,6 +934,12 @@ async function refreshSection(section, options = {}) {
 async function runAction(action, button) {
   const source = state.activeRuntime;
   const prompt = el.promptInput.value.trim();
+  if (["new-task", "continue"].includes(action) && source === "codex" && !prompt) {
+    flashButton(button, "is-done");
+    openPromptSheet({ focus: true });
+    addLocalEvent(source, "ui.prompt.focused", action === "continue" ? "Continue Codex task ready." : "New Codex task ready.");
+    return false;
+  }
   const approval = selectedPendingApprovalFor(source);
   const payload = {
     prompt,
@@ -1588,20 +1602,57 @@ async function ensureControlSession() {
   } catch {
     // Storage is optional; a one-time prompt still works.
   }
-  if (!token) token = window.prompt("Hermes Control token")?.trim() || "";
-  if (!token) throw new Error("Control token required.");
+  while (true) {
+    if (!token) token = await requestControlToken();
+    if (!token) throw new Error("Control token required.");
 
-  const response = await fetch("/api/auth/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify({ token })
-  });
-  if (!response.ok) {
+    const response = await fetch("/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ token })
+    });
+    if (response.ok) {
+      try { window.localStorage.setItem("hermes_control_auth_token_v1", token); } catch { /* optional */ }
+      hideAuthOverlay();
+      return;
+    }
+
     try { window.localStorage.removeItem("hermes_control_auth_token_v1"); } catch { /* optional */ }
-    throw new Error("Invalid Hermes Control token.");
+    token = await requestControlToken("Invalid Hermes Control token.");
   }
-  try { window.localStorage.setItem("hermes_control_auth_token_v1", token); } catch { /* optional */ }
+}
+
+function requestControlToken(errorMessage = "") {
+  if (!el.authOverlay || !el.authForm || !el.authTokenInput) {
+    return Promise.resolve(typeof window.prompt === "function" ? window.prompt("Hermes Control token")?.trim() || "" : "");
+  }
+
+  el.authOverlay.hidden = false;
+  el.authError.textContent = errorMessage;
+  el.authError.hidden = !errorMessage;
+  el.authTokenInput.value = "";
+
+  return new Promise((resolve) => {
+    const submit = (event) => {
+      event.preventDefault();
+      const nextToken = el.authTokenInput.value.trim();
+      if (!nextToken) {
+        el.authError.textContent = "Control token required.";
+        el.authError.hidden = false;
+        el.authTokenInput.focus();
+        return;
+      }
+      el.authForm.removeEventListener("submit", submit);
+      resolve(nextToken);
+    };
+    el.authForm.addEventListener("submit", submit);
+    window.requestAnimationFrame(() => el.authTokenInput.focus());
+  });
+}
+
+function hideAuthOverlay() {
+  if (el.authOverlay) el.authOverlay.hidden = true;
 }
 
 async function parseJsonResponse(response) {
@@ -1985,7 +2036,7 @@ function streamKeyFromMessage(message) {
 }
 
 function statusForStreamEvent(event, fallback) {
-  if (event.type === "task.completed") return "done";
+  if (event.type === "task.completed") return event.payload?.status === "cancelled" ? "cancelled" : "done";
   if (event.type === "task.failed" || event.type === "runtime.error") return "error";
   if (["task.created", "task.progress", "worker.updated", "conversation.message.created", "approval.requested"].includes(event.type)) {
     return "working";
@@ -2060,6 +2111,7 @@ function renderStreams() {
 }
 
 function streamSignalLabel(stream) {
+  if (stream.status === "cancelled") return "STOP";
   if (stream.status === "done") return "DONE";
   if (stream.status === "error") return "ERROR";
   if (stream.text) return "WRITE";
@@ -2119,7 +2171,7 @@ function renderStudioBoard() {
 function revealStreamWhenUseful(stream, event) {
   if (stream.didReveal || !el.streamPanel) return;
   const hasAnswer = Boolean(stream.text || stream.error);
-  const terminal = stream.status === "done" || stream.status === "error";
+  const terminal = ["done", "cancelled", "error"].includes(stream.status);
   const activeTaskEvent = ["conversation.message.created", "task.completed", "task.failed", "runtime.error"].includes(event.type);
   if (!hasAnswer && !terminal) return;
   if (!activeTaskEvent) return;
@@ -2135,8 +2187,9 @@ function revealStreamWhenUseful(stream, event) {
 }
 
 function streamDisplayText(stream) {
-  if (stream.error) return stream.error;
+  if (stream.status === "cancelled") return "Task cancelled.";
   if (stream.text) return stream.text;
+  if (stream.error) return stream.error;
   if (stream.status === "done") return "Task completed. No streamed text payload was received.";
   if (stream.status === "error") return "Task failed before a response token was received.";
   return "Waiting for first token...";
@@ -2380,6 +2433,11 @@ function readStoredCodexSessionMode(theme) {
 
 function sessionModeLabel() {
   return state.codexSessionMode === "current" ? "CURRENT" : "NEW";
+}
+
+function surfaceModeLabel() {
+  const codex = state.runtimes.find((runtime) => runtime.source === "codex");
+  return String(codex?.details?.surface || codex?.details?.mode || "cli").toUpperCase();
 }
 
 function isStageMode() {
