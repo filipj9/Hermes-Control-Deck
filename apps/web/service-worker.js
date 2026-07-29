@@ -1,4 +1,4 @@
-const CACHE_NAME = "hermes-control-shell-v67";
+const CACHE_NAME = "hermes-control-shell-v68";
 const CORE_ASSETS = [
   "/",
   "/index.html",
