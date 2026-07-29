@@ -39,6 +39,8 @@ const state = {
   eventRenderTimer: undefined,
   lastEventRenderAt: 0,
   liveRefreshTimer: undefined,
+  runtimeRefreshPromise: undefined,
+  resumeRefreshTimer: undefined,
   promptOpen: false,
   lastPrompt: "",
   tilt: {
@@ -885,10 +887,21 @@ function startLiveRefresh() {
 }
 
 async function refreshRuntimes(options = {}) {
-  const data = await getJson(refreshUrl("/api/runtimes", options));
-  state.runtimes = data.items || [];
-  persistCache("runtimes", state.runtimes);
-  renderRuntimes(data.errors || []);
+  if (state.runtimeRefreshPromise) return state.runtimeRefreshPromise;
+
+  state.runtimeRefreshPromise = (async () => {
+    const data = await getJson(refreshUrl("/api/runtimes", options));
+    state.runtimes = data.items || [];
+    persistCache("runtimes", state.runtimes);
+    renderRuntimes(data.errors || []);
+    return data;
+  })();
+
+  try {
+    return await state.runtimeRefreshPromise;
+  } finally {
+    state.runtimeRefreshPromise = undefined;
+  }
 }
 
 async function refreshSection(section, options = {}) {
@@ -905,6 +918,7 @@ async function refreshSection(section, options = {}) {
     state.tasks = data.items || [];
     persistCache("tasks", state.tasks);
     pushErrors(data.errors);
+    syncStreamsFromTasks(state.tasks);
     renderTasks();
   }
 
@@ -926,7 +940,8 @@ async function refreshSection(section, options = {}) {
 
   if (section === "events") {
     const data = await getJson(refreshUrl("/api/events?limit=80", options));
-    state.events = data.items || [];
+    state.events = mergeEvents(data.items || [], state.events);
+    rebuildStreamsFromHistory(state.events);
     renderEvents();
   }
 }
@@ -941,6 +956,11 @@ async function runAction(action, button) {
     return false;
   }
   const approval = selectedPendingApprovalFor(source);
+  if (["approve", "reject"].includes(action) && !approval) {
+    addLocalEvent(source, "runtime.error", "No unambiguous pending approval for the selected task.");
+    flashButton(button, "is-failed");
+    return false;
+  }
   const payload = {
     prompt,
     title: prompt ? prompt.slice(0, 80) : undefined,
@@ -989,7 +1009,12 @@ async function runAction(action, button) {
 }
 
 function selectedPendingApprovalFor(source) {
-  return state.approvals.find((approval) => approval.source === source && approval.status === "pending");
+  const pending = state.approvals.filter((approval) => approval.source === source && approval.status === "pending");
+  if (pending.length <= 1) return pending[0];
+  const conversationId = selectedConversationIdFor(source);
+  if (!conversationId) return undefined;
+  const matching = pending.filter((approval) => approval.conversationId === conversationId);
+  return matching.length === 1 ? matching[0] : undefined;
 }
 
 function approvalScopeForButton(action, button) {
@@ -1124,29 +1149,41 @@ function selectedConversationIdFor(source) {
 }
 
 async function afterAction(action) {
+  const sections = new Set();
+
   if (["new-task", "continue", "stop", "kanban", "send"].includes(action)) {
     focusSection("tasks", state.activeRuntime);
-    await refreshSection("tasks");
+    sections.add("tasks");
   }
   if (["agents", "models"].includes(action)) {
     focusSection("agents", state.activeRuntime);
-    await refreshSection("agents");
+    sections.add("agents");
   }
   if (["sessions", "send", "new-task"].includes(action)) {
     focusSection("sessions", state.activeRuntime);
-    await refreshSection("sessions");
+    sections.add("sessions");
   }
   if (["approve", "reject", "events", "send"].includes(action)) {
     focusSection("approvals", state.activeRuntime);
-    await refreshSection("approvals");
+    sections.add("approvals");
   }
-  await refreshSection("events");
-  await refreshRuntimes();
+
+  await Promise.all([
+    ...[...sections].map((section) => refreshSection(section)),
+    refreshSection("events"),
+    refreshRuntimes()
+  ]);
 }
 
 function connectEvents() {
   const stream = new EventSource("/events");
   stream.onmessage = handleStreamEvent;
+  stream.onopen = () => {
+    setLed("live", "LIVE");
+    refreshAll({ force: true }).catch((error) => {
+      addLocalEvent(state.activeRuntime, "runtime.error", error.message);
+    });
+  };
   [
     "runtime.connected",
     "runtime.error",
@@ -1166,6 +1203,21 @@ function connectEvents() {
     "system.metric.sampled"
   ].forEach((type) => stream.addEventListener(type, handleStreamEvent));
   stream.onerror = () => setLed("error", "LINK");
+  window.addEventListener("online", refreshAfterResume);
+  window.addEventListener("pageshow", refreshAfterResume);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshAfterResume();
+  });
+}
+
+function refreshAfterResume() {
+  window.clearTimeout(state.resumeRefreshTimer);
+  state.resumeRefreshTimer = window.setTimeout(() => {
+    refreshAll({ force: true }).catch((error) => {
+      addLocalEvent(state.activeRuntime, "runtime.error", error.message || "Resume refresh failed.");
+      setLed("error", "LINK");
+    });
+  }, 120);
 }
 
 function handleStreamEvent(message) {
@@ -1173,6 +1225,7 @@ function handleStreamEvent(message) {
   const event = JSON.parse(message.data);
   ingestStreamEvent(event);
   applyRuntimeActivityFromEvent(event);
+  applyTaskStateFromEvent(event);
   state.events.unshift(event);
   state.events = state.events.slice(0, 80);
   scheduleEventRender({ immediate: !isHighFrequencyStreamEvent(event) });
@@ -1357,9 +1410,10 @@ function renderTasks() {
   const source = state.sectionFilters.tasks;
   const tasks = state.tasks.filter((task) => task.source === source);
   el.tasksList.innerHTML = tasks.map((task) => `
-    <div class="row">
-      <strong>${escapeHtml(task.title || task.id)}</strong>
-      <span>${escapeHtml(task.source)} / ${escapeHtml(task.status || "unknown")} / ${escapeHtml(task.updatedAt || "")}</span>
+    <div class="row task-row" data-task-id="${escapeHtml(task.id)}">
+      <strong><small>TASK</small> ${escapeHtml(task.title || task.id)}</strong>
+      <span>${escapeHtml(taskStatusLabel(task))} / ${escapeHtml(taskSurfaceLabel(task))} / ${escapeHtml(taskProgressLabel(task))}</span>
+      <small>${escapeHtml(taskActivityLabel(task))}${task.conversationId ? ` / session ${escapeHtml(shortId(task.conversationId))}` : ""}</small>
     </div>
   `).join("") || `<div class="empty">No ${source} tasks</div>`;
 }
@@ -1375,10 +1429,89 @@ function renderSessions() {
       data-conversation-title="${escapeHtml(conversation.title || conversation.id)}"
       data-source="${escapeHtml(conversation.source)}"
       aria-pressed="${conversation.id === activeId ? "true" : "false"}">
-      <strong>${escapeHtml(conversation.title || conversation.id)}</strong>
-      <span>${escapeHtml(conversation.source)} / ${conversation.id === activeId ? "ACTIVE" : escapeHtml(conversation.updatedAt || "")}</span>
+      <strong><small>SESSION</small> ${escapeHtml(conversation.title || conversation.id)}</strong>
+      <span>${conversation.id === activeId ? "SELECTED" : "AVAILABLE"} / ${escapeHtml(conversationSurfaceLabel(conversation))}</span>
+      <small>${escapeHtml(conversation.updatedAt || "")} / conversation history</small>
     </button>
   `).join("") || `<div class="empty">No ${source} sessions</div>`;
+}
+
+function applyTaskStateFromEvent(event) {
+  const payload = event.payload;
+  const eventTask = payload?.task || (
+    payload && typeof payload === "object" && (
+      payload.id || payload.title || payload.status || payload.progress !== undefined
+    )
+      ? payload
+      : undefined
+  );
+  const taskId = event.taskId || eventTask?.id;
+  if (!taskId || !event.source) return;
+
+  let task = state.tasks.find((item) => item.id === taskId);
+  if (!task) {
+    if (!["task.created", "task.progress", "task.completed", "task.failed", "approval.requested"].includes(event.type)) return;
+    task = {
+      id: taskId,
+      source: event.source,
+      agentId: event.agentId,
+      title: eventTask?.title || event.payload?.message || taskId,
+      status: "running",
+      progress: undefined,
+      createdAt: event.timestamp,
+      updatedAt: event.timestamp,
+      metadata: {}
+    };
+    state.tasks.unshift(task);
+  }
+
+  if (eventTask && typeof eventTask === "object") {
+    for (const key of ["title", "status", "progress", "createdAt", "updatedAt", "conversationId", "metadata"]) {
+      if (eventTask[key] !== undefined) task[key] = eventTask[key];
+    }
+  }
+  if (event.conversationId) task.conversationId = event.conversationId;
+  if (event.timestamp) task.updatedAt = event.timestamp;
+  const activity = activityTextFromEvent(event);
+  if (activity) task.metadata = { ...(task.metadata || {}), lastActivity: activity, lastEventType: event.type };
+  const eventStatus = String(eventTask?.status || event.payload?.status || "").toLowerCase();
+  const eventIsTerminal = ["idle", "completed", "done", "failed", "cancelled", "canceled"].includes(eventStatus);
+  if (["task.created", "task.progress", "worker.updated", "conversation.message.created"].includes(event.type) && !eventIsTerminal) {
+    task.status = task.status === "waiting_approval" ? task.status : "running";
+  }
+  if (event.type === "approval.requested") task.status = "waiting_approval";
+  if (event.type === "task.completed") task.status = event.payload?.status === "cancelled" ? "cancelled" : "completed";
+  if (event.type === "task.failed" || event.type === "runtime.error") task.status = "failed";
+  if (Number.isFinite(event.payload?.progress)) task.progress = event.payload.progress;
+  state.tasks = state.tasks.slice(0, 50);
+  persistCache("tasks", state.tasks);
+  syncStreamsFromTasks(state.tasks);
+  renderTasks();
+}
+
+function taskStatusLabel(task) {
+  return String(task.status || "unknown").replaceAll("_", " ").toUpperCase();
+}
+
+function taskSurfaceLabel(task) {
+  return String(task.metadata?.surface || task.metadata?.mode || task.agentId || "runtime").toUpperCase();
+}
+
+function taskProgressLabel(task) {
+  return Number.isFinite(task.progress) ? `${Math.round(task.progress)}%` : "LIVE";
+}
+
+function taskActivityLabel(task) {
+  return compactLogText(task.metadata?.lastActivity || task.metadata?.phase || task.metadata?.message || taskStatusLabel(task));
+}
+
+function conversationSurfaceLabel(conversation) {
+  return String(conversation.metadata?.surface || conversation.metadata?.mode || "runtime").toUpperCase();
+}
+
+function shortId(value) {
+  const text = String(value || "");
+  return text.length > 18 ? `${text.slice(0, 8)}...${text.slice(-6)}` : text;
 }
 
 function renderApprovals() {
@@ -1545,15 +1678,15 @@ function clearRuntimeUnread(source) {
 }
 
 function signalLabelForEvent(event) {
-  if (event.type === "task.created") return "RUN";
-  if (event.type === "worker.updated") return "TOOL";
+  if (event.type === "task.created") return "RUNNING";
+  if (event.type === "worker.updated") return "WORKING";
   if (event.type === "conversation.message.created") {
     if (event.payload?.role === "user") return "SENT";
-    if (event.payload?.role === "assistant") return "WRITE";
-    return "THINK";
+    if (event.payload?.role === "assistant") return "WRITING";
+    return "THINKING";
   }
-  if (event.type === "task.progress") return "RUN";
-  return "THINK";
+  if (event.type === "task.progress") return "RUNNING";
+  return "THINKING";
 }
 
 function setLed(stateName, label) {
@@ -1837,11 +1970,30 @@ function applyRuntimeActivityFromEvent(event) {
     return;
   }
   if (event.type === "approval.requested") {
-    setRuntimeSignal(event.source, "input", "INPUT", "approval needed", { unread: true });
+    setRuntimeSignal(event.source, "input", "WAITING", "approval required - tap ALLOW or DENY", { unread: true });
     setRuntimeActivity(event.source, "working");
     return;
   }
-  if (["task.created", "task.progress", "approval.requested", "worker.updated", "conversation.message.created"].includes(event.type)) {
+  const eventStatus = String(event.payload?.task?.status || event.payload?.status || "").toLowerCase();
+  if (eventStatus === "waiting_approval") {
+    setRuntimeSignal(event.source, "input", "WAITING", "approval required - tap ALLOW or DENY", { unread: true });
+    setRuntimeActivity(event.source, "working");
+    return;
+  }
+  const eventIsTerminal = ["idle", "completed", "done", "failed", "cancelled", "canceled"].includes(eventStatus);
+  if (event.type === "task.progress" && eventIsTerminal) {
+    const failed = eventStatus === "failed";
+    setRuntimeSignal(
+      event.source,
+      failed ? "error" : "done",
+      failed ? "ERROR" : eventStatus === "idle" ? "READY" : "DONE",
+      eventSummary(event),
+      { unread: failed }
+    );
+    setRuntimeActivity(event.source, failed ? "error" : "connected");
+    return;
+  }
+  if (["task.created", "task.progress", "worker.updated", "conversation.message.created"].includes(event.type) && !eventIsTerminal) {
     setRuntimeSignal(event.source, "thinking", signalLabelForEvent(event), logMessageFor(event), { unread: false });
     setRuntimeActivity(event.source, "working");
     return;
@@ -1912,10 +2064,36 @@ function ingestStreamEvent(event) {
     stream.text = assistantText;
   }
 
+  const activity = activityTextFromEvent(event);
+  if (activity) stream.activity = activity;
+  if (!isHighFrequencyStreamEvent(event)) {
+    const eventMessage = activity || logMessageFor(event);
+    if (eventMessage) {
+      const signature = `${event.type}:${eventMessage}`;
+      if (!stream.activityEvents.some((item) => item.signature === signature)) {
+        stream.activityEvents.unshift({
+          signature,
+          type: event.type,
+          timestamp: event.timestamp || new Date().toISOString(),
+          message: eventMessage,
+          status: nextStatus
+        });
+        stream.activityEvents = stream.activityEvents.slice(0, 6);
+      }
+    }
+  }
+
   const metrics = metricsFromEvent(event);
   if (metrics.tps !== undefined) stream.tps = metrics.tps;
-  if (metrics.inputTokens !== undefined) stream.inputTokens = metrics.inputTokens;
-  if (metrics.outputTokens !== undefined && metrics.outputTokens > 0) stream.outputTokens = metrics.outputTokens;
+  if (metrics.totalTokens !== undefined) stream.totalTokens = metrics.totalTokens;
+  if (metrics.inputTokens !== undefined) {
+    stream.inputTokens = metrics.inputTokens;
+    stream.usageKnown = true;
+  }
+  if (metrics.outputTokens !== undefined) {
+    stream.outputTokens = metrics.outputTokens;
+    stream.usageKnown = true;
+  }
   if (metrics.cacheHitPercent !== undefined) stream.cacheHitPercent = metrics.cacheHitPercent;
   if (metrics.durationSeconds !== undefined) stream.durationSeconds = metrics.durationSeconds;
 
@@ -1926,6 +2104,115 @@ function ingestStreamEvent(event) {
   state.streams = [stream, ...state.streams.filter((item) => item.key !== key)].slice(0, 6);
   queueStreamRender();
   revealStreamWhenUseful(stream, event);
+}
+
+function rebuildStreamsFromHistory(events) {
+  const preserved = state.streams.filter((stream) => stream.key.startsWith("pending:") && stream.status === "working");
+  state.streams = [];
+  state.streamMap.clear();
+
+  for (const event of [...events].reverse()) {
+    ingestStreamEvent(event);
+    applyRuntimeActivityFromEvent(event);
+  }
+
+  for (const stream of preserved) {
+    if (!state.streamMap.has(stream.key)) {
+      state.streamMap.set(stream.key, stream);
+      state.streams.push(stream);
+    }
+  }
+
+  state.streams = state.streams
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+    .slice(0, 6);
+  queueStreamRender();
+}
+
+function syncStreamsFromTasks(tasks) {
+  for (const source of ["codex", "hermes"]) {
+    const sourceTasks = tasks
+      .filter((task) => task?.source === source)
+      .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0));
+    const waitingTask = sourceTasks.find((task) => String(task.status || "").toLowerCase() === "waiting_approval");
+    if (waitingTask) {
+      setRuntimeSignal(source, "input", "WAITING", "approval required - tap ALLOW or DENY", {
+        unread: true,
+        render: false
+      });
+      setRuntimeActivity(source, "working");
+      continue;
+    }
+    const runningTask = sourceTasks.find((task) =>
+      ["running", "working", "thinking", "in_progress"].includes(String(task.status || "").toLowerCase())
+    );
+    if (runningTask && state.runtimeSignals[source]?.status !== "input") {
+      setRuntimeSignal(
+        source,
+        "thinking",
+        "RUNNING",
+        runningTask.metadata?.lastActivity
+          || runningTask.metadata?.phase
+          || runningTask.metadata?.message
+          || runningTask.title
+          || "task in progress",
+        { unread: false, render: false }
+      );
+      setRuntimeActivity(source, "working");
+    }
+  }
+  renderAgentKeys();
+
+  for (const task of tasks) {
+    if (!task?.id || !task.source) continue;
+    const status = String(task.status || "").toLowerCase();
+    const active = ["running", "working", "thinking", "in_progress", "waiting_approval"].includes(status);
+    const key = streamKeyFor({
+      source: task.source,
+      taskId: task.id,
+      conversationId: task.conversationId
+    });
+    const existing = state.streamMap.get(key);
+    if (!active && !existing) continue;
+
+    const timestamp = task.updatedAt || task.createdAt || new Date().toISOString();
+    const stream = ensureStream(key, {
+      source: task.source,
+      taskId: task.id,
+      conversationId: task.conversationId,
+      timestamp,
+      payload: { message: task.metadata?.phase || task.metadata?.message || status }
+    });
+    stream.taskId = task.id;
+    stream.conversationId ||= task.conversationId || "";
+    stream.prompt ||= task.metadata?.prompt || task.title || "";
+    const taskActivity = task.metadata?.lastActivity
+      || task.metadata?.phase
+      || task.metadata?.message
+      || (status === "waiting_approval" ? "waiting for approval" : `working on: ${task.title || "active task"}`);
+    stream.activity = taskActivity;
+    stream.status = active ? (status === "waiting_approval" ? "waiting" : "working") : statusForTaskStream(status);
+    stream.updatedAt = timestamp;
+    stream.lastAt = Date.parse(timestamp) || stream.lastAt || Date.now();
+    if (!stream.activityEvents?.length || stream.activityEvents[0]?.message !== taskActivity) {
+      stream.activityEvents = [{
+        signature: `task:${task.id}:${taskActivity}`,
+        type: task.metadata?.lastEventType || "task.progress",
+        timestamp,
+        message: taskActivity,
+        status: stream.status
+      }, ...(stream.activityEvents || [])].slice(0, 6);
+    }
+    state.streams = [stream, ...state.streams.filter((item) => item.key !== stream.key)].slice(0, 6);
+  }
+  queueStreamRender();
+}
+
+function statusForTaskStream(status) {
+  if (["completed", "complete", "done", "success"].includes(status)) return "done";
+  if (["cancelled", "canceled"].includes(status)) return "cancelled";
+  if (["failed", "error"].includes(status)) return "error";
+  return "working";
 }
 
 function primePendingStream(source, prompt) {
@@ -1948,7 +2235,7 @@ function primePendingStream(source, prompt) {
 function rekeyPendingStream(pendingKey, message) {
   const stream = state.streamMap.get(pendingKey);
   if (!stream) return;
-  const nextKey = streamKeyFromMessage(message);
+  const nextKey = streamKeyFromMessage(message, stream.source);
   if (!nextKey || nextKey === pendingKey) return;
 
   const existing = state.streamMap.get(nextKey);
@@ -2001,9 +2288,13 @@ function ensureStream(key, event) {
     tokenEvents: 0,
     inputTokens: 0,
     outputTokens: 0,
+    totalTokens: undefined,
     tps: 0,
     cacheHitPercent: undefined,
     reasoning: "",
+    activity: "",
+    activityEvents: [],
+    usageKnown: false,
     error: "",
     didReveal: false,
     startedAt: eventAt,
@@ -2020,25 +2311,42 @@ function streamKeyFor(event) {
   const streamId = event.payload?.streamId;
   const conversationId = event.conversationId;
   const taskId = event.taskId;
-  if (conversationId && streamId) return `${conversationId}:${streamId}`;
-  if (taskId && !streamId) return taskId;
-  return conversationId || streamId || taskId || "";
+  const identity = taskId || (conversationId && streamId ? `${conversationId}:${streamId}` : conversationId || streamId);
+  return identity ? `${event.source}:${identity}` : "";
 }
 
-function streamKeyFromMessage(message) {
+function streamKeyFromMessage(message, source) {
   if (!message) return "";
   const streamId = message.metadata?.streamId;
   const taskId = message.metadata?.taskId;
   const conversationId = message.conversationId;
-  if (conversationId && streamId) return `${conversationId}:${streamId}`;
-  if (taskId && !streamId) return taskId;
-  return conversationId || streamId || taskId || "";
+  const identity = taskId || (conversationId && streamId ? `${conversationId}:${streamId}` : conversationId || streamId);
+  return identity ? `${source || message.source || "system"}:${identity}` : "";
+}
+
+function mergeEvents(snapshot, live) {
+  const merged = new Map();
+  for (const event of [...snapshot, ...live]) {
+    const key = event.id || `${event.source}:${event.type}:${event.timestamp}:${event.taskId || ""}`;
+    const existing = merged.get(key);
+    if (!existing || Date.parse(event.timestamp || "") >= Date.parse(existing.timestamp || "")) {
+      merged.set(key, event);
+    }
+  }
+  return [...merged.values()]
+    .sort((a, b) => (Date.parse(b.timestamp || "") || 0) - (Date.parse(a.timestamp || "") || 0))
+    .slice(0, 80);
 }
 
 function statusForStreamEvent(event, fallback) {
   if (event.type === "task.completed") return event.payload?.status === "cancelled" ? "cancelled" : "done";
   if (event.type === "task.failed" || event.type === "runtime.error") return "error";
-  if (["task.created", "task.progress", "worker.updated", "conversation.message.created", "approval.requested"].includes(event.type)) {
+  const payloadStatus = String(event.payload?.status || event.payload?.task?.status || "").toLowerCase();
+  if (event.type === "approval.requested" || payloadStatus === "waiting_approval") return "waiting";
+  if (["completed", "complete", "done", "success", "idle"].includes(payloadStatus)) return "done";
+  if (["cancelled", "canceled"].includes(payloadStatus)) return "cancelled";
+  if (["failed", "error"].includes(payloadStatus)) return "error";
+  if (["task.created", "task.progress", "worker.updated", "conversation.message.created"].includes(event.type)) {
     return "working";
   }
   return fallback || "working";
@@ -2046,11 +2354,18 @@ function statusForStreamEvent(event, fallback) {
 
 function metricsFromEvent(event) {
   const data = event.payload?.data || {};
-  const usage = data.usage || event.payload?.usage || {};
+  const cliEvent = event.payload?.cliEvent || {};
+  const usage = data.usage
+    || event.payload?.usage
+    || cliEvent.usage
+    || cliEvent.result?.usage
+    || cliEvent.item?.usage
+    || {};
   return {
-    tps: numberOrUndefined(data.tps ?? usage.tps ?? usage.duration_tps),
-    inputTokens: numberOrUndefined(usage.input_tokens),
-    outputTokens: numberOrUndefined(usage.output_tokens),
+    tps: numberOrUndefined(data.tps ?? usage.tps ?? usage.duration_tps ?? cliEvent.tps),
+    totalTokens: numberOrUndefined(data.totalTokens ?? usage.total_tokens ?? usage.totalTokens ?? event.payload?.tokens),
+    inputTokens: numberOrUndefined(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens),
+    outputTokens: numberOrUndefined(usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens),
     cacheHitPercent: numberOrUndefined(usage.cache_hit_percent ?? usage.turn_cache_hit_percent),
     durationSeconds: numberOrUndefined(usage.duration_seconds ?? data.duration_seconds)
   };
@@ -2070,7 +2385,7 @@ function renderStreams() {
   const active = state.streams[0];
 
   if (!active) {
-    el.streamStats.innerHTML = `<span>idle</span><span>0 tok</span><span>0.0 tps</span>`;
+    el.streamStats.innerHTML = `<span class="stream-pill idle">STANDBY</span><span>no active run</span>`;
     el.streamConsole.innerHTML = `
       <div class="stream-empty">
         <b>STANDBY</b>
@@ -2081,41 +2396,79 @@ function renderStreams() {
   }
 
   el.streamStats.innerHTML = `
-    <span class="stream-pill ${escapeHtml(active.status)}">${escapeHtml(active.status)}</span>
-    <span>${escapeHtml(tokenLabel(active))}</span>
-    <span>${escapeHtml(formatNumber(active.tps, 1))} tps</span>
+    <span class="stream-pill ${escapeHtml(active.status)}">${escapeHtml(streamStatusLabel(active))}</span>
+    ${streamMetricLabels(active).map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
     <span>${escapeHtml(formatElapsed(active))}</span>
   `;
 
-  el.streamConsole.innerHTML = state.streams.map((stream, index) => `
+  el.streamConsole.innerHTML = state.streams.map((stream, index) => {
+    const approvalRequired = stream.status === "waiting";
+    const activityEvents = approvalRequired
+      ? [{
+          timestamp: stream.updatedAt || new Date().toISOString(),
+          message: "APPROVAL REQUIRED - TAP ALLOW OR DENY",
+          status: "waiting"
+        }, ...(stream.activityEvents || []).filter((item) =>
+          !/approval required|waiting for approval/i.test(String(item.message || ""))
+        )].slice(0, 4)
+      : (stream.activityEvents || []).slice(0, 4);
+
+    return `
     <article class="stream-card ${escapeHtml(stream.status)}">
       <div class="stream-card-head">
         <strong>${escapeHtml(stream.source.toUpperCase())} ${escapeHtml(streamSignalLabel(stream))}</strong>
-        <span>${escapeHtml(index === 0 ? "live" : "recent")} / ${escapeHtml(tokenLabel(stream))} / ${escapeHtml(formatElapsed(stream))}</span>
+        <span>${escapeHtml(index === 0 ? "live" : "recent")} / ${escapeHtml(formatElapsed(stream))}</span>
       </div>
       <div class="stream-brief">
-        <b>${escapeHtml(stream.status.toUpperCase())}</b>
-        <span>${escapeHtml(compactLogText(streamDisplayText(stream)))}</span>
+        <b>NOW</b>
+        <span>${escapeHtml(streamDisplayText(stream))}</span>
+      </div>
+      <div class="stream-activity-list" aria-label="Recent runtime activity">
+        ${activityEvents.map((item) => `
+          <div class="stream-activity-row" data-status="${escapeHtml(item.status || stream.status)}">
+            <time>${escapeHtml(formatTime(item.timestamp))}</time>
+            <span>${escapeHtml(item.message)}</span>
+          </div>
+        `).join("") || `<div class="stream-activity-row is-empty"><time>--:--</time><span>waiting for first runtime event</span></div>`}
       </div>
       ${stream.prompt ? `<div class="stream-prompt">prompt / ${escapeHtml(compactLogText(stream.prompt))}</div>` : ""}
-      <pre class="stream-detail">${escapeHtml(streamDisplayText(stream))}</pre>
+      ${stream.text || stream.error ? `<pre class="stream-detail">${escapeHtml(streamDisplayText(stream))}</pre>` : ""}
       <div class="stream-meta">
         <span>${escapeHtml(formatElapsed(stream))}</span>
+        ${streamMetricLabels(stream).map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
         ${stream.reasoning ? `<span>${escapeHtml(stream.reasoning.toUpperCase())} rsn</span>` : ""}
         ${stream.cacheHitPercent !== undefined ? `<span>cache ${escapeHtml(formatNumber(stream.cacheHitPercent, 0))}%</span>` : ""}
         ${stream.streamId ? `<span>${escapeHtml(stream.streamId.slice(0, 10))}</span>` : ""}
       </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
   renderStudioBoard();
 }
 
 function streamSignalLabel(stream) {
+  if (stream.status === "waiting") return "WAITING";
   if (stream.status === "cancelled") return "STOP";
   if (stream.status === "done") return "DONE";
   if (stream.status === "error") return "ERROR";
   if (stream.text) return "WRITE";
   return "RUN";
+}
+
+function streamStatusLabel(stream) {
+  if (stream.status === "waiting") return "APPROVAL";
+  if (stream.status === "cancelled") return "STOPPED";
+  if (stream.status === "done") return "COMPLETE";
+  if (stream.status === "error") return "ERROR";
+  if (stream.status === "working") return "WORKING";
+  return String(stream.status || "STANDBY").toUpperCase();
+}
+
+function streamMetricLabels(stream) {
+  const labels = [];
+  if (Number.isFinite(stream.totalTokens) || stream.usageKnown || stream.tokenEvents > 0) labels.push(tokenLabel(stream));
+  if (Number.isFinite(stream.tps) && stream.tps > 0) labels.push(`${formatNumber(stream.tps, 1)} tps`);
+  return labels;
 }
 
 function renderStudioBoard() {
@@ -2187,12 +2540,13 @@ function revealStreamWhenUseful(stream, event) {
 }
 
 function streamDisplayText(stream) {
+  if (stream.status === "waiting") return "APPROVAL REQUIRED - TAP ALLOW OR DENY";
   if (stream.status === "cancelled") return "Task cancelled.";
-  if (stream.text) return stream.text;
   if (stream.error) return stream.error;
+  if (stream.text) return stream.text;
   if (stream.status === "done") return "Task completed. No streamed text payload was received.";
   if (stream.status === "error") return "Task failed before a response token was received.";
-  return "Waiting for first token...";
+  return stream.activity || "RUNNING - awaiting runtime output...";
 }
 
 function renderLiveLog() {
@@ -2252,9 +2606,77 @@ function logMessageFor(event) {
   return event.type.replaceAll(".", " ");
 }
 
+function activityTextFromEvent(event) {
+  const action = runtimeActionFromEvent(event);
+  if (action) return action;
+  const candidates = [
+    event.payload?.message,
+    event.payload?.detail,
+    event.payload?.phase,
+    event.payload?.statusText,
+    event.payload?.cliEvent?.message,
+    event.payload?.cliEvent?.status
+  ];
+  const message = candidates.find((value) => typeof value === "string" && value.trim());
+  if (message) return compactLogText(message);
+  if (event.type === "approval.requested") return "approval needed";
+  if (event.type === "task.created") return "task queued";
+  if (event.type === "task.progress") return "task progressing";
+  if (event.type === "worker.updated") return "worker active";
+  if (event.type === "conversation.message.created") return "response received";
+  if (event.type === "runtime.error") return compactLogText(event.payload?.error || "runtime error");
+  return "";
+}
+
+function runtimeActionFromEvent(event) {
+  const payload = event.payload || {};
+  const cli = payload.cliEvent || {};
+  const item = cli.item || payload.item || payload.raw?.item;
+  if (item && typeof item === "object") {
+    const itemText = item.text || item.message || item.detail;
+    if (typeof itemText === "string" && itemText.trim()) return compactLogText(itemText);
+    if (typeof item.command === "string" && item.command.trim()) return compactLogText(`running: ${item.command}`);
+    if (typeof item.path === "string" && item.path.trim()) return compactLogText(`working on: ${item.path}`);
+    if (typeof item.name === "string" && item.name.trim()) return compactLogText(`using: ${item.name}`);
+    if (typeof item.type === "string") {
+      const labels = {
+        command_execution: "running command",
+        file_change: "writing files",
+        mcp_tool_call: "calling tool",
+        agent_message: "writing response",
+        reasoning: "reasoning"
+      };
+      if (labels[item.type]) return labels[item.type];
+    }
+  }
+  const phase = payload.phase || payload.detail || payload.statusText || cli.status;
+  if (typeof phase === "string" && phase.trim()) return compactLogText(phase);
+  if (event.type === "approval.requested") return "waiting for approval";
+  if (event.type === "approval.resolved") return "approval resolved";
+  if (event.type === "task.created") return "task queued";
+  if (event.type === "task.progress") return "task progressing";
+  if (event.type === "worker.updated") return "worker active";
+  if (event.type === "conversation.message.created") return event.payload?.role === "assistant" ? "writing response" : "prompt sent";
+  if (event.type === "task.completed") return "task complete";
+  if (event.type === "task.failed" || event.type === "runtime.error") return "runtime error";
+  return "";
+}
+
 function compactLogText(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
+  const activityLabels = {
+    js: "inspecting application",
+    exec: "running command",
+    apply_patch: "editing files",
+    wait: "waiting for process",
+    reasoning: "planning next step",
+    "writing response": "writing response",
+    "prompt received": "prompt received",
+    "tool completed": "tool completed"
+  };
+  const activityLabel = activityLabels[text.toLowerCase()];
+  if (activityLabel) return activityLabel;
   if (text.includes("Hermes password missing")) return "auth required";
   if (text.includes("fetch failed")) return "link failed";
   if (text.includes("No pending")) return "no pending approval";
@@ -2339,6 +2761,7 @@ function tokenTextFromEvent(event) {
 }
 
 function tokenLabel(stream) {
+  if (Number.isFinite(stream.totalTokens) && stream.totalTokens > 0) return `${stream.totalTokens} tok`;
   const output = Number.isFinite(stream.outputTokens) ? stream.outputTokens : 0;
   const input = Number.isFinite(stream.inputTokens) ? stream.inputTokens : 0;
   if (input > 0) return `${output} out / ${input} in`;
@@ -2346,12 +2769,13 @@ function tokenLabel(stream) {
 }
 
 function formatElapsed(stream) {
-  if (stream.status !== "working" && Number.isFinite(stream.durationSeconds)) {
+  const active = ["working", "waiting"].includes(stream.status);
+  if (!active && Number.isFinite(stream.durationSeconds)) {
     const seconds = Math.max(0, stream.durationSeconds);
     if (seconds < 60) return `${formatNumber(seconds, 1)}s`;
     return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
   }
-  const end = stream.status === "working" ? Date.now() : stream.lastAt;
+  const end = active ? Date.now() : stream.lastAt;
   const seconds = Math.max(0, (end - stream.startedAt) / 1000);
   if (seconds < 60) return `${formatNumber(seconds, 1)}s`;
   return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
@@ -2380,6 +2804,7 @@ function hydrateFromCache() {
   state.approvals = readCache("approvals", []);
   renderRuntimes();
   renderAgents();
+  syncStreamsFromTasks(state.tasks);
   renderTasks();
   renderSessions();
   renderApprovals();
