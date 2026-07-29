@@ -106,3 +106,15 @@ violet-mockup-approved.png
 The list is a file inventory, not a grant of trademark rights. Before a public
 release, generate SHA-256 checksums and record the exact release selection; do
 not publish unused source/mocking variants by accident.
+
+## Repository showcase media
+
+The README showcase contains two generated presentation images:
+
+- `docs/media/hermes-control-banner.png` - project banner showing the mobile
+  control deck and CLI-first positioning;
+- `docs/media/hermes-control-deck-mockup.png` - generated Hermes Control deck
+  mockup used as a visual product preview.
+
+These are presentation assets, not executable application code. Their text and
+logos must remain subject to the same third-party branding disclaimer above.
