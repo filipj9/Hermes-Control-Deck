@@ -1,6 +1,8 @@
 import { HermesApiClient } from "./HermesApiClient.mjs";
 import { toHermesAgents, toHermesConversations, toHermesTasks, toMetricEvent } from "./HermesEventMapper.mjs";
 
+const HERMES_STALE_ACTIVE_TASK_GRACE_MS = 60_000;
+
 export class HermesRuntimeAdapter {
   constructor(config, eventBus) {
     this.source = "hermes";
@@ -88,17 +90,36 @@ export class HermesRuntimeAdapter {
 
     try {
       result = await this.client.firstJson([
-        `${this.config.apiPrefix}/kanban/tasks?status=all&sort=updated`
+        `${this.config.apiPrefix}/kanban/tasks?status=all&sort=updated`,
+        "/kanban/tasks?status=all&sort=updated",
+        `${this.config.apiPrefix}/tasks`,
+        "/tasks"
       ]);
       tasks = toHermesTasks(result.data);
+
+      // Kanban is historical state. Reconcile it with the unauthenticated
+      // Hermes health snapshot so a live WSL/CLI run appears immediately and
+      // stale active cards do not keep the deck in RUNNING forever.
+      try {
+        const health = await this.client.health();
+        const liveTasks = toHermesTasks(health).filter(isLiveTask);
+        if (liveTasks.length) {
+          tasks = mergeLiveTasks(tasks, liveTasks);
+          result = { ...result, route: `${result.route}+/health` };
+        } else if (isExplicitIdleHealth(health)) {
+          const reconciled = reconcileStaleActiveTasks(tasks, Date.now());
+          if (reconciled !== tasks) {
+            tasks = reconciled;
+            result = { ...result, route: `${result.route}+/health:idle` };
+          }
+        }
+      } catch {
+        // Preserve the Kanban snapshot when the optional live probe is down.
+      }
     } catch (error) {
       const health = await this.client.health();
       result = { route: "/health:runs", data: health };
-      tasks = toHermesTasks({
-        runs: health?.runs || [],
-        active_runs: health?.active_runs,
-        last_run_finished_at: health?.last_run_finished_at
-      });
+      tasks = toHermesTasks(health);
     }
 
     this.eventBus.publish({
@@ -526,4 +547,65 @@ function mapChatEventType(eventName) {
   if (eventName === "token") return "conversation.message.created";
   if (eventName === "tool" || eventName === "tool_complete") return "worker.updated";
   return "task.progress";
+}
+
+function isLiveTask(task) {
+  return ["running", "working", "thinking", "in_progress", "waiting_approval"]
+    .includes(String(task?.status || "").toLowerCase());
+}
+
+function isExplicitIdleHealth(health) {
+  if (!health || typeof health !== "object") return false;
+  const status = String(health.status || "").toLowerCase();
+  if (status && !["ok", "idle", "ready"].includes(status)) return false;
+
+  const activeRuns = Number(health.active_runs ?? health.activeRuns);
+  if (Number.isFinite(activeRuns)) return activeRuns === 0;
+  return Array.isArray(health.runs) && health.runs.length === 0;
+}
+
+function reconcileStaleActiveTasks(tasks, now) {
+  let changed = false;
+  const reconciled = tasks.map((task) => {
+    const status = String(task?.status || "").toLowerCase();
+    // Approval states require a real approval snapshot; never infer a decision.
+    if (!["running", "working", "thinking", "in_progress"].includes(status)) return task;
+
+    const updatedAt = Date.parse(task.updatedAt || task.createdAt || "");
+    if (!Number.isFinite(updatedAt) || now - updatedAt < HERMES_STALE_ACTIVE_TASK_GRACE_MS) return task;
+
+    changed = true;
+    return {
+      ...task,
+      status: "completed",
+      progress: task.progress === undefined ? 100 : task.progress,
+      updatedAt: new Date(now).toISOString(),
+      metadata: {
+        ...task.metadata,
+        lastActivity: "Hermes reports no active run",
+        reconciledFrom: status,
+        reconciledAt: new Date(now).toISOString()
+      }
+    };
+  });
+  return changed ? reconciled : tasks;
+}
+
+function mergeLiveTasks(tasks, liveTasks) {
+  const merged = [...tasks];
+  for (const liveTask of liveTasks) {
+    const liveRunId = liveTask.metadata?.run_id
+      ?? liveTask.metadata?.runId
+      ?? liveTask.metadata?.id;
+    const index = merged.findIndex((task) => {
+      const taskRunId = task.metadata?.run_id
+        ?? task.metadata?.runId
+        ?? task.metadata?.bridgeRunId;
+      return (liveRunId && taskRunId && String(liveRunId) === String(taskRunId))
+        || (liveTask.conversationId && task.conversationId === liveTask.conversationId && isLiveTask(task));
+    });
+    if (index >= 0) merged[index] = liveTask;
+    else merged.push(liveTask);
+  }
+  return merged;
 }
