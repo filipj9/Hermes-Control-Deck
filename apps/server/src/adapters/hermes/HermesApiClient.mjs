@@ -130,6 +130,12 @@ export class HermesApiClient {
           }
         }
       }
+
+      // Some Hermes WebUI versions close the stream with one final SSE frame
+      // that is not followed by the blank delimiter. Do not drop that frame.
+      buffer += decoder.decode();
+      const finalEvent = parseSseChunk(buffer.trim());
+      if (finalEvent) await onEvent(finalEvent);
     } finally {
       if (timeout) clearTimeout(timeout);
     }
