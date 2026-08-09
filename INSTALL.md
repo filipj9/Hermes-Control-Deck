@@ -43,3 +43,7 @@ npm start
 
 The default bind is `127.0.0.1:4240`. No ports are automatically opened,
 forwarded, or exposed by this project.
+
+The optional Hermes Gateway/TUI and approval-event integrations are installed
+separately after the base WebUI + Codex CLI setup is verified. They are not
+required for first run. See `docs/HERMES_GATEWAY_TUI.md`.

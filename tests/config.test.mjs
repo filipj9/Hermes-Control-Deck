@@ -12,7 +12,15 @@ const envKeys = [
   "CODEX_WORKDIR",
   "CONTROL_AUTH_TOKEN",
   "CONTROL_MAX_BODY_BYTES",
-  "CONTROL_MAX_PROMPT_CHARS"
+  "CONTROL_MAX_PROMPT_CHARS",
+  "HERMES_WS_ENABLED",
+  "HERMES_WS_URL",
+  "HERMES_TUI_RELAY_ENABLED",
+  "HERMES_TUI_RELAY_TOKEN",
+  "HERMES_TUI_RELAY_UPSTREAM_WS_URL",
+  "HERMES_BRIDGE_ENABLED",
+  "HERMES_BRIDGE_TOKEN",
+  "HERMES_EXTERNAL_APPROVAL_MONITOR_ENABLED"
 ];
 
 function withEnv(values, callback) {
@@ -45,6 +53,26 @@ test("CLI-first config is explicit and valid without private defaults", () => {
   assert.equal(config.codex.surface, "cli");
   assert.equal(config.codex.workdir, root);
   assert.equal(config.server.maxBodyBytes, 262144);
+  assert.equal(config.hermes.ws.enabled, false);
+  assert.equal(config.hermes.relay.enabled, false);
+  assert.equal(config.hermes.bridge.enabled, false);
+  assert.equal(config.hermes.externalApprovalMonitorEnabled, false);
+});
+
+test("optional Hermes transports require explicit secrets and upstreams", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-control-config-"));
+  assert.throws(
+    () => withEnv({
+      HERMES_ENABLED: "false",
+      HERMES_TUI_RELAY_ENABLED: "true",
+      HERMES_TUI_RELAY_TOKEN: "short",
+      HERMES_TUI_RELAY_UPSTREAM_WS_URL: "ws://127.0.0.1:8791/api/ws",
+      CODEX_ENABLED: "false",
+      CODEX_WORKDIR: root,
+      CONTROL_AUTH_TOKEN: "x".repeat(64)
+    }, () => loadConfig(root)),
+    /HERMES_TUI_RELAY_TOKEN/
+  );
 });
 
 test("enabled Hermes requires an explicitly configured base URL", () => {

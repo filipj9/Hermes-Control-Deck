@@ -1,0 +1,8 @@
+name: hermes-control-approval-bridge
+version: 0.1.0
+description: "Relays Hermes Gateway approval requests and decisions through Hermes Control Deck."
+author: Hermes Control contributors
+kind: standalone
+provides_hooks:
+  - pre_approval_request
+  - post_approval_response

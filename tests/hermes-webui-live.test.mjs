@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
@@ -145,4 +142,3 @@ function listen(server) {
 function close(server) {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
-

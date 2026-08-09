@@ -7,6 +7,8 @@ import { EventBus } from "./infrastructure/EventBus.mjs";
 import { loadConfig } from "./infrastructure/config.mjs";
 import { RuntimeRegistry } from "./application/RuntimeRegistry.mjs";
 import { HermesRuntimeAdapter } from "./adapters/hermes/HermesRuntimeAdapter.mjs";
+import { HermesBridgeReceiver } from "./adapters/hermes/HermesBridgeReceiver.mjs";
+import { HermesTuiRelay } from "./adapters/hermes/HermesTuiRelay.mjs";
 import { CodexRuntimeAdapter } from "./adapters/codex/CodexRuntimeAdapter.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
@@ -16,6 +18,12 @@ const webRoot = path.join(projectRoot, "apps", "web");
 
 const config = loadConfig(projectRoot);
 const eventBus = new EventBus();
+const hermesBridge = new HermesBridgeReceiver(config.hermes.bridge, eventBus, {
+  logger: (message) => console.warn(message)
+});
+const hermesTuiRelay = new HermesTuiRelay(config.hermes.relay, {
+  logger: (level, message) => (level === "warning" ? console.warn(message) : console.log(message))
+});
 const registry = new RuntimeRegistry();
 const adapterCache = new Map();
 const rateBuckets = new Map();
@@ -25,7 +33,10 @@ if (!config.server.authToken || config.server.authToken.length < 32) {
 }
 
 if (config.hermes.enabled) {
-  registry.register(new HermesRuntimeAdapter(config.hermes, eventBus));
+  registry.register(new HermesRuntimeAdapter(config.hermes, eventBus, {
+    bridgeReceiver: hermesBridge,
+    monitorExternalApprovals: config.hermes.externalApprovalMonitorEnabled
+  }));
 }
 
 if (config.codex.enabled) {
@@ -55,7 +66,8 @@ const server = http.createServer(async (request, response) => {
     const protectedRequest = requestUrl.pathname === "/events"
       || requestUrl.pathname === "/healthz"
       || requestUrl.pathname.startsWith("/api/");
-    if (protectedRequest && requestUrl.pathname !== "/api/auth/session") {
+    const bridgeTransportRequest = isHermesBridgeTransportRoute(request.method, requestUrl.pathname);
+    if (protectedRequest && requestUrl.pathname !== "/api/auth/session" && !bridgeTransportRequest) {
       if (!isAuthorized(request)) {
         writeJson(response, 401, { ok: false, error: "Authentication required" });
         return;
@@ -78,18 +90,24 @@ const server = http.createServer(async (request, response) => {
 
     await serveStatic(requestUrl.pathname, response);
   } catch (error) {
-    writeJson(response, 500, {
+    writeJson(response, error.statusCode || 500, {
       ok: false,
-      error: error.message
+      error: error.message,
+      ...(error.code ? { code: error.code } : {})
     });
   }
 });
+
+hermesTuiRelay.attach(server);
 
 server.listen(config.server.port, config.server.host, () => {
   const localUrl = `http://${config.server.host}:${config.server.port}`;
   console.log(`Hermes Control ready on ${localUrl}`);
   console.log(`API: ${localUrl}/api/runtimes`);
   console.log(`Events: ${localUrl}/events`);
+  if (config.hermes.relay.enabled) {
+    console.log(`Hermes TUI relay: ${config.hermes.relay.path}`);
+  }
 });
 
 async function handleApi(request, response, requestUrl) {
@@ -115,7 +133,13 @@ async function handleApi(request, response, requestUrl) {
       hermes: {
         enabled: config.hermes.enabled,
         configured: Boolean(config.hermes.baseUrl),
-        hasPassword: Boolean(config.hermes.password)
+        hasPassword: Boolean(config.hermes.password),
+        websocket: {
+          enabled: config.hermes.ws.enabled,
+          configured: Boolean(config.hermes.ws.url)
+        },
+        gatewayBridge: hermesBridge.health(),
+        tuiRelay: hermesTuiRelay.health()
       },
       codex: {
         enabled: config.codex.enabled,
@@ -145,11 +169,26 @@ async function handleApi(request, response, requestUrl) {
   }
 
   if (method === "GET" && pathname === "/api/tasks") {
-    writeJson(response, 200, await callEach("listTasks", {
-      deadlineMs: config.server.adapterReadDeadlineMs,
-      cacheTtlMs: 5000,
-      forceRefresh: shouldForceRefresh(requestUrl)
-    }));
+    const [data, health] = await Promise.all([
+      callEach("listTasks", {
+        deadlineMs: config.server.adapterReadDeadlineMs,
+        cacheTtlMs: 5000,
+        forceRefresh: shouldForceRefresh(requestUrl)
+      }),
+      callEach("health", {
+        deadlineMs: config.server.adapterDeadlineMs,
+        cacheTtlMs: 2000,
+        forceRefresh: shouldForceRefresh(requestUrl)
+      })
+    ]);
+    const hermesHealth = health.items?.find((item) => item.source === "hermes" && item.ok);
+    if (hermesHealth?.details) hermesBridge.reconcileWithRuntimeHealth(hermesHealth.details);
+    const byId = new Map((data.items || []).map((task) => [task.id, task]));
+    for (const task of hermesBridge.listTasks()) byId.set(task.id, task);
+    writeJson(response, 200, {
+      ...data,
+      items: [...byId.values()].sort(byUpdatedAtDesc).slice(0, 50)
+    });
     return;
   }
 
@@ -190,6 +229,52 @@ async function handleApi(request, response, requestUrl) {
       limit,
       minutes
     });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/hermes/events/health") {
+    writeJson(response, 200, hermesBridge.health());
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/hermes/events") {
+    hermesBridge.authorize(request.headers);
+    requireJsonContentType(request);
+    const body = await readJson(request, { maxBytes: config.hermes.bridge.maxBodyBytes });
+    const result = hermesBridge.accept(body);
+    invalidateAdapterCache();
+    writeJson(response, result.duplicate ? 200 : 202, { ok: true, ...result });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/hermes/approval-decisions/claim") {
+    hermesBridge.authorize(request.headers);
+    const gatewayId = requestUrl.searchParams.get("gateway_id");
+    const limit = clampNumber(requestUrl.searchParams.get("limit"), 1, 10, 1);
+    const waitMs = clampNumber(requestUrl.searchParams.get("wait_ms"), 0, 25_000, 0);
+    const leaseMs = clampNumber(requestUrl.searchParams.get("lease_ms"), 5_000, 120_000, 30_000);
+    const deadline = Date.now() + waitMs;
+    let items = [];
+    do {
+      items = hermesBridge.claimDecisions({ gatewayId, limit, leaseMs });
+      if (items.length || Date.now() >= deadline) break;
+      await delay(Math.min(250, Math.max(1, deadline - Date.now())));
+    } while (!request.destroyed);
+    writeJson(response, 200, { ok: true, items });
+    return;
+  }
+
+  const hermesDecisionAckMatch = pathname.match(/^\/api\/hermes\/approval-decisions\/([^/]+)\/ack$/);
+  if (method === "POST" && hermesDecisionAckMatch) {
+    hermesBridge.authorize(request.headers);
+    const body = await readJson(request, { maxBytes: config.hermes.bridge.maxBodyBytes });
+    const decision = hermesBridge.ackDecision({
+      decisionId: decodeURIComponent(hermesDecisionAckMatch[1]),
+      gatewayId: body.gateway_id ?? body.gatewayId,
+      status: body.status,
+      error: body.error
+    });
+    writeJson(response, 200, { ok: true, decision });
     return;
   }
 
@@ -452,14 +537,15 @@ function setCommonHeaders(response, request) {
   response.setHeader("Referrer-Policy", "no-referrer");
 }
 
-async function readJson(request) {
+async function readJson(request, options = {}) {
+  const maxBytes = options.maxBytes ?? config.server.maxBodyBytes;
   const contentLength = Number(request.headers["content-length"] || 0);
-  if (contentLength > config.server.maxBodyBytes) throw new Error("Request body too large.");
+  if (contentLength > maxBytes) throw requestError("Request body too large.", 413, "request_too_large");
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > config.server.maxBodyBytes) throw new Error("Request body too large.");
+    if (total > maxBytes) throw requestError("Request body too large.", 413, "request_too_large");
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString("utf8");
@@ -506,6 +592,30 @@ function constantTimeEquals(left, right) {
   const a = Buffer.from(String(left || ""));
   const b = Buffer.from(String(right || ""));
   return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+}
+
+function isHermesBridgeTransportRoute(method, pathname) {
+  return (method === "POST" && pathname === "/api/hermes/events")
+    || (method === "GET" && pathname === "/api/hermes/approval-decisions/claim")
+    || (method === "POST" && /^\/api\/hermes\/approval-decisions\/[^/]+\/ack$/.test(pathname));
+}
+
+function requireJsonContentType(request) {
+  const value = String(request.headers["content-type"] || "").toLowerCase();
+  if (!value.startsWith("application/json")) {
+    throw requestError("Content-Type must be application/json", 415, "unsupported_media_type");
+  }
+}
+
+function requestError(message, statusCode, code) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function allowRate(request) {

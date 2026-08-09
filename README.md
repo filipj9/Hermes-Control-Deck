@@ -34,6 +34,14 @@ The public edition supports:
   in-memory conversation display;
 - an installable mobile PWA shell with authenticated API and SSE connections.
 
+Two optional Hermes integrations are also included, disabled by default:
+
+- a WebSocket/TUI transport that resumes an existing Hermes Gateway session;
+- an approval-event plugin transport with queued decisions and explicit ACKs.
+
+These integrations require a compatible Hermes Agent/Gateway build. The core
+Hermes WebUI + Codex CLI product does not depend on them.
+
 The public edition deliberately does **not** include:
 
 - Codex Desktop integration;
@@ -55,7 +63,7 @@ This repository is an alpha release candidate: **v0.1.0-alpha**.
 
 The current public tree has been checked with:
 
-- 13 automated tests passing;
+- 76 automated tests passing in the isolated release staging tree;
 - JavaScript syntax checks passing for the application check list;
 - local API smoke checks for health, runtimes, agents, tasks, sessions,
   approvals, and events;
@@ -89,8 +97,8 @@ Two compatibility limits remain intentional:
                     |                                   |
                     v                                   v
        +---------------------------+       +---------------------------+
-       | Hermes WebUI Adapter      |       | Codex CLI Adapter          |
-       | HTTP, cookie auth, SSE    |       | local child process, JSONL |
+       | Hermes Adapter            |       | Codex CLI Adapter          |
+       | HTTP/SSE + optional WS    |       | local child process, JSONL |
        +-------------+-------------+       +-------------+-------------+
                      |                                   |
                      v                                   v
@@ -212,6 +220,12 @@ The Hermes adapter uses the configured WebUI contract for operations including:
 - pending approval lookup and approval response;
 - Kanban boards, statistics, and task reads where available.
 
+For a compatible Hermes Gateway, the optional TUI relay can resume a selected
+session and share its event stream with a terminal TUI. The optional approval
+plugin can relay Gateway approval requests and return Allow/Deny decisions.
+Both features require explicit opt-in configuration and separate secrets. See
+[docs/HERMES_GATEWAY_TUI.md](docs/HERMES_GATEWAY_TUI.md).
+
 Hermes Control does not modify Hermes WebUI. If a route, auth behavior, or
 stream shape differs in the installed upstream version, the compatibility
 matrix must be updated and the adapter contract re-tested.
@@ -266,6 +280,10 @@ is in [.env.example](.env.example). The most important values are:
 | `HERMES_BASE_URL` | External Hermes WebUI base URL |
 | `HERMES_PASSWORD` | Hermes WebUI password, kept in process memory |
 | `HERMES_API_PREFIX` | Hermes API prefix, default `/api` |
+| `HERMES_WS_ENABLED` | Enables the optional Hermes Gateway WebSocket transport |
+| `HERMES_TUI_RELAY_ENABLED` | Enables the optional shared TUI relay |
+| `HERMES_BRIDGE_ENABLED` | Enables the optional approval-event receiver |
+| `HERMES_EXTERNAL_APPROVAL_MONITOR_ENABLED` | Enables bounded WebUI approval background polling |
 | `CODEX_EXECUTABLE` | Codex CLI path, or empty for `PATH` discovery |
 | `CODEX_WORKDIR` | Workspace used by local Codex CLI runs |
 | `CODEX_MODEL` | Optional Codex model selection |
@@ -382,6 +400,7 @@ See [SECURITY.md](SECURITY.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) - external notices;
 - [PUBLIC_RELEASE_AUDIT.md](PUBLIC_RELEASE_AUDIT.md) - release verification;
 - [docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md) - clean-machine test plan;
+- [docs/HERMES_GATEWAY_TUI.md](docs/HERMES_GATEWAY_TUI.md) - optional Gateway/TUI and approval bridge;
 - [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md) - upstream audit.
 
 ## License
