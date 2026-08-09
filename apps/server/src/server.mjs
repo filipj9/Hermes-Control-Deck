@@ -9,7 +9,7 @@ import { RuntimeRegistry } from "./application/RuntimeRegistry.mjs";
 import { HermesRuntimeAdapter } from "./adapters/hermes/HermesRuntimeAdapter.mjs";
 import { HermesBridgeReceiver } from "./adapters/hermes/HermesBridgeReceiver.mjs";
 import { HermesTuiRelay } from "./adapters/hermes/HermesTuiRelay.mjs";
-import { CodexRuntimeAdapter } from "./adapters/codex/CodexRuntimeAdapter.mjs";
+import { createCodexAdapter } from "./adapters/codex/createCodexAdapter.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
@@ -40,14 +40,21 @@ if (config.hermes.enabled) {
 }
 
 if (config.codex.enabled) {
-  registry.register(new CodexRuntimeAdapter(config.codex, eventBus));
+  registry.register(await createCodexAdapter(config.codex, eventBus));
 }
 
 for (const adapter of registry.all()) {
   eventBus.publish({
     source: adapter.source,
     type: "runtime.connected",
-    payload: { mode: adapter.source === "codex" ? config.codex.mode : "remote" }
+    payload: {
+      mode: adapter.source === "codex"
+        ? (config.codex.experimentalDesktop.enabled ? "experimental-desktop" : config.codex.mode)
+        : "remote",
+      ...(adapter.source === "codex" ? {
+        surface: config.codex.experimentalDesktop.enabled ? "desktop" : "cli"
+      } : {})
+    }
   });
 }
 
@@ -143,8 +150,9 @@ async function handleApi(request, response, requestUrl) {
       },
       codex: {
         enabled: config.codex.enabled,
-        mode: "cli",
-        surface: "cli"
+        mode: config.codex.experimentalDesktop.enabled ? "experimental-desktop" : "cli",
+        surface: config.codex.experimentalDesktop.enabled ? "desktop" : "cli",
+        experimental: config.codex.experimentalDesktop.enabled
       }
     });
     return;

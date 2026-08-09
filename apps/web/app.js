@@ -892,6 +892,13 @@ async function refreshRuntimes(options = {}) {
   state.runtimeRefreshPromise = (async () => {
     const data = await getJson(refreshUrl("/api/runtimes", options));
     state.runtimes = data.items || [];
+    const codexRuntime = state.runtimes.find((runtime) => runtime.source === "codex");
+    const codexSurface = String(
+      codexRuntime?.details?.surface
+      || codexRuntime?.details?.activeSurface
+      || "cli"
+    ).toLowerCase();
+    state.codexSurfaceMode = codexSurface === "desktop" ? "desktop" : "cli";
     persistCache("runtimes", state.runtimes);
     renderRuntimes(data.errors || []);
     return data;
@@ -965,7 +972,7 @@ async function runAction(action, button) {
     prompt,
     title: prompt ? prompt.slice(0, 80) : undefined,
     reasoning: state.reasoningLevel,
-    surface: source === "codex" ? "cli" : undefined,
+    surface: source === "codex" ? state.codexSurfaceMode : undefined,
     conversationId: selectedConversationIdFor(source),
     resumeLast: shouldResumeCurrent(source, action),
     approvalId: approval?.id,
@@ -1050,7 +1057,7 @@ async function sendPrompt(button) {
           source,
           content,
           reasoning: state.reasoningLevel,
-          surface: source === "codex" ? "cli" : undefined,
+          surface: source === "codex" ? state.codexSurfaceMode : undefined,
           conversationId: selectedConversationIdFor(source),
           resumeLast: shouldResumeCurrent(source, "send")
         });
@@ -1868,6 +1875,25 @@ async function cycleReasoning(button) {
   const index = reasoningLevels.indexOf(previousLevel);
   const fallbackLevel = reasoningLevels[(index + 1) % reasoningLevels.length];
   let nextLevel = fallbackLevel;
+
+  if (state.activeRuntime === "codex" && state.codexSurfaceMode === "desktop") {
+    try {
+      const data = await postJson("/api/actions", {
+        source: "codex",
+        action: "reasoning-up",
+        payload: {
+          surface: "desktop",
+          current: previousLevel,
+          target: fallbackLevel
+        }
+      });
+      nextLevel = normalizeUiReasoning(data.result?.to) || fallbackLevel;
+    } catch (error) {
+      flashButton(button, "is-failed");
+      addLocalEvent("codex", "runtime.error", error.message);
+      return false;
+    }
+  }
 
   state.reasoningLevel = nextLevel;
   try {

@@ -16,7 +16,7 @@ function textFiles(directory) {
   return files;
 }
 
-test("public copy excludes private bridge source files", () => {
+test("CLI-first core excludes Desktop bridge source files", () => {
   const forbiddenFiles = [
     "apps/server/src/adapters/codex/CodexDesktopBridge.mjs",
     "apps/server/src/adapters/codex/CodexApiClient.mjs",
@@ -28,15 +28,28 @@ test("public copy excludes private bridge source files", () => {
   for (const relativePath of forbiddenFiles) assert.equal(fs.existsSync(path.join(root, relativePath)), false, relativePath);
 });
 
-test("public source has no private bridge imports or machine-specific network defaults", () => {
+test("CLI-first core has no Desktop bridge imports", () => {
   const sourceRoots = [path.join(root, "apps"), path.join(root, "config"), path.join(root, "scripts")];
-  const content = sourceRoots.flatMap((directory) => textFiles(directory)).map((filePath) => fs.readFileSync(filePath, "utf8")).join("\n");
+  const content = sourceRoots
+    .flatMap((directory) => textFiles(directory))
+    .filter((filePath) => !filePath.includes(`${path.sep}experimental${path.sep}codex-desktop${path.sep}`))
+    .filter((filePath) => !filePath.endsWith(`${path.sep}createCodexAdapter.mjs`))
+    .map((filePath) => fs.readFileSync(filePath, "utf8"))
+    .join("\n");
 
   for (const forbidden of ["CodexDesktopBridge", "CodexApiClient", "CodexAppServerClient"]) {
     assert.equal(content.includes(forbidden), false, forbidden);
   }
+});
+
+test("experimental Desktop bridge stays quarantined and has no machine-specific defaults", () => {
+  const experimentalRoot = path.join(root, "apps", "server", "src", "experimental", "codex-desktop");
+  assert.equal(fs.existsSync(experimentalRoot), true);
+  const content = textFiles(experimentalRoot).map((filePath) => fs.readFileSync(filePath, "utf8")).join("\n");
   assert.doesNotMatch(content, /\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[0-1])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}\.\d{1,3}\b/);
   assert.doesNotMatch(content, /[A-Z]:\\Users\\[^\\\r\n]+/i);
+  assert.doesNotMatch(content, /Stop-Process|taskkill|start-codex-desktop-bridge/i);
+  assert.doesNotMatch(content, /\bspawn\s*\(|\b(?:child|process)\.kill\s*\(/i);
 });
 
 test("public copy ships a template environment only, never a live secret file", () => {

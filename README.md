@@ -42,7 +42,7 @@ Two optional Hermes integrations are also included, disabled by default:
 These integrations require a compatible Hermes Agent/Gateway build. The core
 Hermes WebUI + Codex CLI product does not depend on them.
 
-The public edition deliberately does **not** include:
+The CLI-first core deliberately does **not** depend on:
 
 - Codex Desktop integration;
 - CDP or renderer automation;
@@ -50,8 +50,11 @@ The public edition deliberately does **not** include:
 - application launching or workspace control through a desktop GUI;
 - any private machine, IP address, password, token, or production deployment.
 
-Codex Desktop is not silently disabled behind a flag. It is outside this public
-tree and must not be expected by users of this repository.
+An optional Codex Desktop experiment is shipped in a quarantined directory and
+is disabled by default. It is Windows-only, unofficial, unsupported, and may
+break after any Codex Desktop update. The server dynamically imports it only
+after explicit opt-in; CLI-first behavior remains the default. See
+[docs/EXPERIMENTAL_CODEX_DESKTOP.md](docs/EXPERIMENTAL_CODEX_DESKTOP.md).
 
 > Hermes Control is an independent community project. It is not sponsored by,
 > endorsed by, or officially affiliated with OpenAI, Codex, Nous Research, or
@@ -63,7 +66,7 @@ This repository is an alpha release candidate: **v0.1.0-alpha**.
 
 The current public tree has been checked with:
 
-- 76 automated tests passing in the isolated release staging tree;
+- 81 automated tests passing in the isolated release staging tree;
 - JavaScript syntax checks passing for the application check list;
 - local API smoke checks for health, runtimes, agents, tasks, sessions,
   approvals, and events;
@@ -288,6 +291,7 @@ is in [.env.example](.env.example). The most important values are:
 | `CODEX_WORKDIR` | Workspace used by local Codex CLI runs |
 | `CODEX_MODEL` | Optional Codex model selection |
 | `CODEX_SANDBOX` | Codex sandbox argument |
+| `CODEX_EXPERIMENTAL_DESKTOP_ENABLED` | Explicitly enables the unsupported Windows Desktop experiment |
 | `CODEX_APPROVAL_POLICY` | Codex approval policy |
 | `CODEX_RUN_TIMEOUT_MS` | Maximum run duration |
 | `CODEX_ALLOW_CONCURRENT_RUNS` | Whether multiple CLI runs may coexist |

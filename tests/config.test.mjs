@@ -20,7 +20,13 @@ const envKeys = [
   "HERMES_TUI_RELAY_UPSTREAM_WS_URL",
   "HERMES_BRIDGE_ENABLED",
   "HERMES_BRIDGE_TOKEN",
-  "HERMES_EXTERNAL_APPROVAL_MONITOR_ENABLED"
+  "HERMES_EXTERNAL_APPROVAL_MONITOR_ENABLED",
+  "CODEX_EXPERIMENTAL_DESKTOP_ENABLED",
+  "CODEX_EXPERIMENTAL_DESKTOP_CDP_HOST",
+  "CODEX_EXPERIMENTAL_DESKTOP_CDP_PORT",
+  "CODEX_EXPERIMENTAL_DESKTOP_REQUEST_TIMEOUT_MS",
+  "CODEX_EXPERIMENTAL_DESKTOP_CODEX_HOME",
+  "CODEX_EXPERIMENTAL_DESKTOP_STATE_FILE"
 ];
 
 function withEnv(values, callback) {
@@ -57,6 +63,23 @@ test("CLI-first config is explicit and valid without private defaults", () => {
   assert.equal(config.hermes.relay.enabled, false);
   assert.equal(config.hermes.bridge.enabled, false);
   assert.equal(config.hermes.externalApprovalMonitorEnabled, false);
+  assert.equal(config.codex.experimentalDesktop.enabled, false);
+  assert.equal(config.codex.experimentalDesktop.cdpHost, "127.0.0.1");
+});
+
+test("experimental Desktop config rejects a non-loopback CDP endpoint", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-control-config-"));
+  assert.throws(
+    () => withEnv({
+      HERMES_ENABLED: "false",
+      CODEX_ENABLED: "true",
+      CODEX_WORKDIR: root,
+      CODEX_EXPERIMENTAL_DESKTOP_ENABLED: "true",
+      CODEX_EXPERIMENTAL_DESKTOP_CDP_HOST: "0.0.0.0",
+      CONTROL_AUTH_TOKEN: "x".repeat(64)
+    }, () => loadConfig(root)),
+    /loopback host/
+  );
 });
 
 test("optional Hermes transports require explicit secrets and upstreams", () => {

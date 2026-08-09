@@ -116,7 +116,19 @@ export function loadConfig(projectRoot) {
       stopTimeoutMs: numberFrom(env.CODEX_STOP_TIMEOUT_MS, 5000),
       allowConcurrentRuns: env.CODEX_ALLOW_CONCURRENT_RUNS === "true",
       maxPromptChars: numberFrom(env.CODEX_MAX_PROMPT_CHARS, 100000),
-      minVersion: env.CODEX_MIN_VERSION || ""
+      minVersion: env.CODEX_MIN_VERSION || "",
+      experimentalDesktop: {
+        enabled: env.CODEX_EXPERIMENTAL_DESKTOP_ENABLED === "true",
+        cdpHost: env.CODEX_EXPERIMENTAL_DESKTOP_CDP_HOST || "127.0.0.1",
+        cdpPort: numberFrom(env.CODEX_EXPERIMENTAL_DESKTOP_CDP_PORT, 4248),
+        requestTimeoutMs: numberFrom(env.CODEX_EXPERIMENTAL_DESKTOP_REQUEST_TIMEOUT_MS, 6000),
+        codexHome: env.CODEX_EXPERIMENTAL_DESKTOP_CODEX_HOME || "",
+        stateFile: env.CODEX_EXPERIMENTAL_DESKTOP_STATE_FILE || path.join(
+          projectRoot,
+          ".runtime",
+          "experimental-codex-desktop.json"
+        )
+      }
     }
   };
   validateConfig(config);
@@ -197,6 +209,26 @@ function validateConfig(config) {
   if (config.codex.runTimeoutMs < 1000 || config.codex.stopTimeoutMs < 100) {
     throw new Error("Codex process timeouts are invalid.");
   }
+  if (config.codex.experimentalDesktop.enabled) {
+    if (!config.codex.enabled) {
+      throw new Error("CODEX_ENABLED must be true when the experimental Desktop bridge is enabled.");
+    }
+    if (!isLoopbackHost(config.codex.experimentalDesktop.cdpHost)) {
+      throw new Error("CODEX_EXPERIMENTAL_DESKTOP_CDP_HOST must be a loopback host.");
+    }
+    if (
+      config.codex.experimentalDesktop.cdpPort < 1
+      || config.codex.experimentalDesktop.cdpPort > 65535
+      || config.codex.experimentalDesktop.requestTimeoutMs < 500
+    ) {
+      throw new Error("Experimental Codex Desktop bridge port or timeout is invalid.");
+    }
+  }
+}
+
+function isLoopbackHost(value) {
+  const host = String(value || "").trim().toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
 }
 
 export function createAuthToken() {
