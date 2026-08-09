@@ -131,15 +131,15 @@ does not install, authenticate, update, or manage either runtime for you.
 PowerShell:
 
 ```powershell
-git clone https://github.com/<your-account>/<your-repository>.git
-Set-Location -LiteralPath .\<your-repository>
+git clone https://github.com/filipj9/Hermes-Control-Deck.git
+Set-Location -LiteralPath .\Hermes-Control-Deck
 ```
 
 macOS or Linux:
 
 ```bash
-git clone https://github.com/<your-account>/<your-repository>.git
-cd <your-repository>
+git clone https://github.com/filipj9/Hermes-Control-Deck.git
+cd Hermes-Control-Deck
 ```
 
 ### 2. Create a local configuration
@@ -205,6 +205,24 @@ npm start
 
 Open the printed local URL in a browser. The PWA requests the control token
 and establishes an authenticated browser session.
+
+### Updating an existing checkout
+
+Stop the Hermes Control server, preserve your local `.env`, and update only
+through a fast-forward pull:
+
+```text
+git pull --ff-only
+npm install
+npm run check
+npm test
+npm start
+```
+
+Review new keys in `.env.example` after every update and copy only the settings
+you need into your existing `.env`. Updates never require committing `.env`.
+The experimental Desktop add-on remains disabled unless it is explicitly
+enabled again in local configuration.
 
 ## Hermes WebUI Setup
 

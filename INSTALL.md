@@ -15,6 +15,19 @@ in the clean-machine test report before a public alpha release.
 
 ## Setup
 
+Clone the repository and enter its directory:
+
+```powershell
+git clone https://github.com/filipj9/Hermes-Control-Deck.git
+Set-Location -LiteralPath .\Hermes-Control-Deck
+```
+
+Install the project dependencies:
+
+```powershell
+npm install
+```
+
 ```powershell
 Copy-Item .env.example .env
 ```
@@ -47,3 +60,23 @@ forwarded, or exposed by this project.
 The optional Hermes Gateway/TUI and approval-event integrations are installed
 separately after the base WebUI + Codex CLI setup is verified. They are not
 required for first run. See `docs/HERMES_GATEWAY_TUI.md`.
+
+## Updating
+
+Stop the running server and keep your local `.env` in place:
+
+```powershell
+git pull --ff-only
+npm install
+npm run check
+npm test
+npm start
+```
+
+Compare `.env.example` with your existing `.env` after the pull. Add newly
+documented options deliberately; never replace a working `.env` blindly and
+never commit it.
+
+The optional Windows-only Codex Desktop experiment has a separate startup and
+verification procedure in `docs/EXPERIMENTAL_CODEX_DESKTOP.md`. Complete and
+verify the CLI-first setup before enabling it.
