@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta id="themeColor" name="theme-color" content="#0b0415" />
+    <meta id="themeColor" name="theme-color" content="#f7f9f8" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Hermes Control" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>Hermes Control</title>
     <script>
       (() => {
@@ -15,21 +15,16 @@
         window.__HERMES_CONTROL_THEME__ = theme;
       })();
     </script>
-    <link id="manifestLink" rel="manifest" href="/manifest-violet.webmanifest" />
-    <link id="faviconLink" rel="icon" href="/assets/pwa-violet-v2-icon-192.png" type="image/png" />
-    <link id="appleIconLink" rel="apple-touch-icon" href="/assets/pwa-violet-v2-icon-180.png" />
+    <link id="manifestLink" rel="manifest" href="/manifest-clean.webmanifest" />
+    <link id="faviconLink" rel="icon" href="/assets/pwa-clean-icon-192.png" type="image/png" />
+    <link id="appleIconLink" rel="apple-touch-icon" href="/assets/pwa-clean-icon-180.png" />
     <script>
       (() => {
-        document.querySelector("#themeColor")?.setAttribute("content", "#0b0415");
-        document.querySelector("#manifestLink")?.setAttribute("href", "/manifest-violet.webmanifest");
-        document.querySelector("#faviconLink")?.setAttribute("href", "/assets/pwa-violet-v2-icon-192.png");
+        document.querySelector("#themeColor")?.setAttribute("content", "#f7f9f8");
+        document.querySelector("#manifestLink")?.setAttribute("href", "/manifest-clean.webmanifest");
+        document.querySelector("#faviconLink")?.setAttribute("href", "/assets/pwa-clean-icon-192.png");
         document.querySelector("#faviconLink")?.setAttribute("type", "image/png");
-        document.querySelector("#appleIconLink")?.setAttribute("href", "/assets/pwa-violet-v2-icon-180.png");
-        const splash = document.createElement("link");
-        splash.rel = "apple-touch-startup-image";
-        splash.href = "/assets/pwa-violet-v2-splash-1206x2622.png";
-        splash.media = "(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3)";
-        document.head.append(splash);
+        document.querySelector("#appleIconLink")?.setAttribute("href", "/assets/pwa-clean-icon-180.png");
       })();
     </script>
     <link rel="stylesheet" href="/styles.css?v=74" />
@@ -50,7 +45,7 @@
     </div>
     <div class="boot-loader" id="bootLoader" aria-label="Hermes Control loading">
       <div class="boot-device" aria-hidden="true">
-        <img class="boot-icon-violet" src="/assets/pwa-violet-v2-icon-512.png" alt="" />
+        <img class="boot-icon-violet" src="/assets/pwa-clean-icon-512.png" alt="" />
         <span></span>
         <span></span>
         <span></span>

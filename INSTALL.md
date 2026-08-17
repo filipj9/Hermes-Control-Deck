@@ -1,5 +1,9 @@
 # Installation
 
+For the complete non-developer walkthrough, including runtime choices, a safe
+first-run checklist, phone/PWA setup, updates, rollback, and troubleshooting,
+use [`docs/CLEAN_INSTALLATION.md`](docs/CLEAN_INSTALLATION.md).
+
 ## Requirements
 
 - Node.js version listed in `COMPATIBILITY.md`;

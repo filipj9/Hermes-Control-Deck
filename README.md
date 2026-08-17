@@ -2,6 +2,14 @@
 
 > A mobile-first PWA control deck for Hermes WebUI and local Codex CLI runtimes.
 
+The Clean release uses a white Codex Micro-inspired hardware interface while
+preserving the existing CLI-first runtime controls and adapter contracts.
+
+**New user? Follow [Hermes Control Clean — installation from zero to
+ready](docs/CLEAN_INSTALLATION.md).** It covers Windows, Linux, WSL, macOS,
+Hermes-only, Codex-only, combined setup, phone installation, updates, rollback,
+and common errors.
+
 <p align="center">
   <img src="docs/media/hermes-control-banner.png" alt="Hermes Control mobile control deck banner" width="100%">
 </p>
@@ -125,6 +133,11 @@ Hermes WebUI and Codex CLI are user-owned runtime dependencies. Hermes Control
 does not install, authenticate, update, or manage either runtime for you.
 
 ## Quick Start
+
+For a guided setup with explanations and first-run checks, use
+[`docs/CLEAN_INSTALLATION.md`](docs/CLEAN_INSTALLATION.md). The short version
+below assumes you already know the local Hermes WebUI URL, have an authenticated
+Codex CLI, and understand the `.env` values.
 
 ### 1. Clone the repository
 

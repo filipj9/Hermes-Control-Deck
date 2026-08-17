@@ -1,40 +1,21 @@
-const CACHE_NAME = "hermes-control-shell-v68";
+const CACHE_NAME = "hermes-control-clean-shell-v1";
 const CORE_ASSETS = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
   "/manifest.webmanifest",
-  "/manifest-violet.webmanifest",
+  "/manifest-clean.webmanifest",
   "/assets/codex-logo.svg",
   "/assets/hermes-logo.png",
   "/assets/pwa-icon.svg",
   "/assets/pwa-icon-180.png",
   "/assets/pwa-icon-192.png",
   "/assets/pwa-icon-512.png",
-  "/assets/pwa-violet-v2-icon-180.png",
-  "/assets/pwa-violet-v2-icon-192.png",
-  "/assets/pwa-violet-v2-icon-512.png",
-  "/assets/pwa-violet-v2-icon-1024.png",
-  "/assets/pwa-violet-v2-splash-1206x2622.png",
-  "/assets/pwa-violet-v2-splash-1179x2556.png",
-  "/assets/premium-exact-mode.png",
-  "/assets/premium-exact-status.png",
-  "/assets/premium-exact-new.png",
-  "/assets/premium-exact-rate.png",
-  "/assets/premium-exact-run.png",
-  "/assets/premium-exact-log.png",
-  "/assets/premium-exact-allow.png",
-  "/assets/premium-exact-deny.png",
-  "/assets/premium-exact-task.png",
-  "/assets/premium-exact-ok.png",
-  "/assets/premium-exact-no.png",
-  "/assets/premium-exact-open.png",
-  "/assets/premium-exact-prompt.png",
-  "/assets/premium-exact-stop.png",
-  "/assets/premium-exact-flow.png",
-  "/assets/premium-exact-agent-frame.png",
-  "/assets/premium-exact-agent-switch.png"
+  "/assets/pwa-clean-icon-180.png",
+  "/assets/pwa-clean-icon-192.png",
+  "/assets/pwa-clean-icon-512.png",
+  "/assets/pwa-clean-icon-1024.png"
 ];
 
 self.addEventListener("install", (event) => {

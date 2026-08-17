@@ -181,10 +181,10 @@ function applyTheme() {
   const favicon = document.querySelector("#faviconLink");
   const appleIcon = document.querySelector("#appleIconLink");
 
-  themeColor?.setAttribute("content", "#0b0415");
-  manifest?.setAttribute("href", "/manifest-violet.webmanifest");
-  favicon?.setAttribute("href", "/assets/pwa-violet-v2-icon-192.png");
-  appleIcon?.setAttribute("href", "/assets/pwa-violet-v2-icon-180.png");
+  themeColor?.setAttribute("content", "#f7f9f8");
+  manifest?.setAttribute("href", "/manifest-clean.webmanifest");
+  favicon?.setAttribute("href", "/assets/pwa-clean-icon-192.png");
+  appleIcon?.setAttribute("href", "/assets/pwa-clean-icon-180.png");
 }
 
 function mountPremiumViolet() {
@@ -339,20 +339,15 @@ function renderPremiumHardwareDeck() {
     if (control.wide) classes.push("premium-wide");
     if (["status", "new", "run", "log", "allow", "deny"].includes(control.slot)) classes.push("premium-dark-key");
     if (["task", "ok", "no", "open", "prompt", "flow"].includes(control.slot)) classes.push("premium-light-key");
-    const asset = premiumKeyAsset(control);
     const rotor = control.knob
       ? `<span class="premium-exact-knob-rotor" aria-hidden="true"><i></i></span><span class="premium-knob-readout">${escapeHtml(control.readout || "")}</span>`
       : "";
-    const body = `<img class="premium-key-surface premium-exact-surface" src="${asset}" alt="" draggable="false" aria-hidden="true" />${rotor}`;
+    const body = rotor;
     return `<button class="${classes.join(" ")}" data-action="${control.action}" data-tone="${control.tone}" data-control-label="${control.label}" data-mock-slot="${control.slot}" data-turn="${knobTurnFor(control)}" style="${escapeHtml(knobStyleFor(control))}" aria-label="${escapeHtml(labelFor(control))}" title="${escapeHtml(labelFor(control))}">
       ${body}
     </button>`;
   }).join("");
   el.promptTrigger = el.hardwareDeck.querySelector('[data-mock-slot="prompt"]');
-}
-
-function premiumKeyAsset(control) {
-  return `/assets/premium-exact-${control.slot}.png?v=54`;
 }
 
 function premiumControlIcon(slot) {
@@ -603,8 +598,9 @@ function bindControls() {
         return;
       }
       if (action === "send") {
-        flashButton(actionButton, "is-done");
+        event.preventDefault();
         openPromptSheet();
+        flashButton(actionButton, "is-done");
         return;
       }
       await runAction(action, actionButton);
@@ -780,7 +776,12 @@ function openPromptSheet(options = {}) {
   el.promptOverlay.hidden = false;
   document.body.classList.add("prompt-open");
   renderPromptRuntimeTabs();
-  if (options.focus !== false) focusPromptInput();
+  if (options.focus !== false) {
+    // Make the freshly revealed textarea focusable within the same touch gesture.
+    // This keeps iOS Safari from requiring a second tap before showing its keyboard.
+    void el.promptInput?.offsetHeight;
+    focusPromptInput();
+  }
   window.requestAnimationFrame(() => {
     el.promptOverlay.classList.add("is-open");
     resizePromptInput();
@@ -1947,7 +1948,6 @@ function closePremiumInspector() {
 
 function flashButton(button, className) {
   button.classList.remove("is-done", "is-failed");
-  void button.offsetWidth;
   button.classList.add(className);
   window.setTimeout(() => button.classList.remove(className), 620);
 }
