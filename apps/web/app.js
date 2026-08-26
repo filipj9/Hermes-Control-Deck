@@ -509,7 +509,29 @@ function bindControls() {
       state.selectedConversationId = conversationRow.dataset.conversationId;
       state.codexSessionMode = "current";
       localStorage.setItem("hermes_control_codex_session_mode_v1", "current");
+      if (el.streamPanel) {
+        el.streamPanel.dataset.focusConversationId = state.selectedConversationId;
+      }
       renderSessions();
+      try {
+        if (conversationRow.dataset.source === "codex" && state.codexSurfaceMode === "desktop") {
+          await postJson("/api/actions", {
+            source: "codex",
+            action: "select-session",
+            payload: { surface: "desktop", conversationId: state.selectedConversationId }
+          });
+        }
+        await Promise.all([
+          refreshSection("sessions", { force: true }),
+          refreshSection("tasks", { force: true }),
+          refreshSection("events", { force: true }),
+          refreshRuntimes({ force: true })
+        ]);
+        renderStreams();
+      } catch (error) {
+        addLocalEvent(conversationRow.dataset.source || state.activeRuntime, "runtime.error", error.message);
+        setRuntimeActivity(conversationRow.dataset.source || state.activeRuntime, "error");
+      }
       addLocalEvent(
         conversationRow.dataset.source || state.activeRuntime,
         "conversation.selected",
@@ -888,6 +910,16 @@ function startLiveRefresh() {
     refreshRuntimes({ force: true }).catch((error) => {
       addLocalEvent("codex", "runtime.error", error.message);
     });
+    const hasActiveUiWork = state.streams.some((stream) => ["working", "waiting"].includes(stream.status))
+      || Object.values(state.runtimeActivity).includes("working");
+    if (hasActiveUiWork) {
+      refreshSection("tasks").catch((error) => {
+        addLocalEvent(state.activeRuntime, "runtime.error", error.message || "Task refresh failed.");
+      });
+      refreshSection("approvals").catch((error) => {
+        addLocalEvent(state.activeRuntime, "runtime.error", error.message || "Approval refresh failed.");
+      });
+    }
   }, 5000);
 }
 
@@ -927,7 +959,7 @@ async function refreshSection(section, options = {}) {
 
   if (section === "tasks") {
     const data = await getJson(refreshUrl("/api/tasks", options));
-    state.tasks = data.items || [];
+    state.tasks = mergeTaskRefresh(state.tasks, data.items || []);
     persistCache("tasks", state.tasks);
     pushErrors(data.errors);
     syncStreamsFromTasks(state.tasks);
@@ -1466,6 +1498,30 @@ function renderTasks() {
   `).join("") || `<div class="empty">No ${source} tasks</div>`;
 }
 
+function isTerminalTaskStatus(status) {
+  return ["completed", "complete", "done", "failed", "error", "cancelled", "canceled", "blocked", "timeout"].includes(
+    String(status || "").toLowerCase()
+  );
+}
+
+function isActiveTaskStatus(status) {
+  return ["queued", "running", "working", "thinking", "in_progress", "waiting_approval"].includes(
+    String(status || "").toLowerCase()
+  );
+}
+
+function mergeTaskRefresh(current, incoming) {
+  const priorById = new Map((current || []).filter((task) => task?.id).map((task) => [task.id, task]));
+  return (incoming || []).map((task) => {
+    const prior = priorById.get(task?.id);
+    if (!prior || !isTerminalTaskStatus(prior.status) || !isActiveTaskStatus(task.status)) return task;
+    const priorTurn = prior.metadata?.observedTurnId || prior.metadata?.turnId;
+    const incomingTurn = task.metadata?.observedTurnId || task.metadata?.turnId;
+    if (priorTurn && incomingTurn && String(priorTurn) !== String(incomingTurn)) return task;
+    return prior;
+  });
+}
+
 function renderSessions() {
   const source = state.sectionFilters.sessions;
   const conversations = state.conversations.filter((conversation) => conversation.source === source);
@@ -1497,6 +1553,7 @@ function applyTaskStateFromEvent(event) {
   if (!taskId || !event.source) return;
 
   let task = state.tasks.find((item) => item.id === taskId);
+  if (task && shouldRejectLateLifecycleEvent(event, task)) return;
   if (!task) {
     if (!["task.created", "task.progress", "task.completed", "task.failed", "approval.requested"].includes(event.type)) return;
     task = {
@@ -1528,13 +1585,42 @@ function applyTaskStateFromEvent(event) {
     task.status = task.status === "waiting_approval" ? task.status : "running";
   }
   if (event.type === "approval.requested") task.status = "waiting_approval";
+  if (event.type === "approval.resolved") {
+    const decision = String(event.payload?.decision || event.payload?.choice || event.payload?.status || "").toLowerCase();
+    task.status = /deny|declin|reject|cancel|block|fail/.test(decision) ? "blocked" : "running";
+  }
   if (event.type === "task.completed") task.status = event.payload?.status === "cancelled" ? "cancelled" : "completed";
   if (event.type === "task.failed" || event.type === "runtime.error") task.status = "failed";
   if (Number.isFinite(event.payload?.progress)) task.progress = event.payload.progress;
+  if (isTerminalTaskStatus(task.status)) task.progress = 100;
   state.tasks = state.tasks.slice(0, 50);
   persistCache("tasks", state.tasks);
   syncStreamsFromTasks(state.tasks);
   renderTasks();
+}
+
+function shouldRejectLateLifecycleEvent(event, task) {
+  if (!isTerminalTaskStatus(task?.status)) return false;
+  const incomingTurn = event.payload?.turnId
+    || event.payload?.turn_id
+    || event.payload?.task?.metadata?.observedTurnId
+    || event.payload?.task?.metadata?.turnId;
+  const currentTurn = task.metadata?.observedTurnId || task.metadata?.turnId;
+  if (incomingTurn && currentTurn && String(incomingTurn) !== String(currentTurn)) return false;
+  if (event.type === "approval.resolved") {
+    const decision = String(event.payload?.decision || event.payload?.choice || event.payload?.status || "").toLowerCase();
+    return !/deny|declin|reject|cancel|block|fail/.test(decision);
+  }
+  return [
+    "task.created",
+    "task.progress",
+    "task.completed",
+    "task.failed",
+    "runtime.error",
+    "worker.updated",
+    "conversation.message.created",
+    "approval.requested"
+  ].includes(event.type);
 }
 
 function taskStatusLabel(task) {
@@ -1677,7 +1763,7 @@ function setRuntimeTabState(source, status) {
 
 function setRuntimeActivity(source, status, options = {}) {
   if (!source) return;
-  if (state.activityTimers[source]) {
+  if (state.activityTimers[source] && status !== "connected") {
     window.clearTimeout(state.activityTimers[source]);
     state.activityTimers[source] = undefined;
   }
@@ -1692,14 +1778,17 @@ function setRuntimeActivity(source, status, options = {}) {
   if (options.render !== false) renderAgentKeys();
 }
 
-function scheduleRuntimeReady(source, delayMs = 1400) {
+function scheduleRuntimeReady(source, delayMs = 1400, options = {}) {
   if (state.activityTimers[source]) {
     window.clearTimeout(state.activityTimers[source]);
   }
+  const expectedSignalSince = state.runtimeSignals[source]?.since;
   state.activityTimers[source] = window.setTimeout(() => {
     state.activityTimers[source] = undefined;
     const runtime = state.runtimes.find((item) => item.source === source);
-    if (!runtime?.ok || state.runtimeActivity[source] === "working") return;
+    const signalUnchanged = state.runtimeSignals[source]?.since === expectedSignalSince;
+    if (!runtime?.ok || !signalUnchanged) return;
+    if (!options.force && state.runtimeActivity[source] === "working") return;
     setRuntimeSignal(source, "ready", "READY", "connected", { unread: false, render: false });
     setRuntimeActivity(source, "connected");
   }, delayMs);
@@ -2025,6 +2114,8 @@ function pulseHaptic(ms) {
 
 function applyRuntimeActivityFromEvent(event) {
   if (!event?.source) return;
+  const lifecycleTask = event.taskId ? state.tasks.find((task) => task.id === event.taskId) : undefined;
+  if (lifecycleTask && shouldRejectLateLifecycleEvent(event, lifecycleTask)) return;
   if (event.type === "runtime.error" || event.type === "task.failed") {
     if (isDeadlineEvent(event)) {
       setRuntimeSignal(event.source, "input", "SLOW", eventSummary(event), { unread: false });
@@ -2046,6 +2137,19 @@ function applyRuntimeActivityFromEvent(event) {
     setRuntimeActivity(event.source, "working");
     return;
   }
+  if (event.type === "approval.resolved") {
+    const decision = String(event.payload?.decision || event.payload?.choice || event.payload?.status || "").toLowerCase();
+    const rejected = /deny|declin|reject|cancel|block|fail/.test(decision);
+    if (rejected) {
+      setRuntimeSignal(event.source, "done", "DONE", "approval denied", { unread: false });
+      setRuntimeActivity(event.source, "connected");
+      scheduleRuntimeReady(event.source, 1400, { force: true });
+    } else {
+      setRuntimeSignal(event.source, "thinking", "RUNNING", "approval resolved - task continuing", { unread: false });
+      setRuntimeActivity(event.source, "working");
+    }
+    return;
+  }
   const eventIsTerminal = ["idle", "completed", "done", "failed", "cancelled", "canceled"].includes(eventStatus);
   if (event.type === "task.progress" && eventIsTerminal) {
     const failed = eventStatus === "failed";
@@ -2057,6 +2161,7 @@ function applyRuntimeActivityFromEvent(event) {
       { unread: failed }
     );
     setRuntimeActivity(event.source, failed ? "error" : "connected");
+    if (!failed && eventStatus !== "idle") scheduleRuntimeReady(event.source, 2200, { force: true });
     return;
   }
   if (["task.created", "task.progress", "worker.updated", "conversation.message.created"].includes(event.type) && !eventIsTerminal) {
@@ -2068,11 +2173,12 @@ function applyRuntimeActivityFromEvent(event) {
     if (event.payload?.status === "cancelled") {
       setRuntimeSignal(event.source, "input", "STOP", "task cancelled", { unread: false });
       setRuntimeActivity(event.source, "connected");
-      scheduleRuntimeReady(event.source, 2200);
+      scheduleRuntimeReady(event.source, 2200, { force: true });
       return;
     }
     setRuntimeSignal(event.source, "done", "DONE", completedDetailForEvent(event), { unread: true });
     setRuntimeActivity(event.source, "connected");
+    scheduleRuntimeReady(event.source, 2200, { force: true });
     return;
   }
   if (["runtime.connected", "task.completed", "approval.resolved"].includes(event.type)) {
@@ -2257,7 +2363,14 @@ function syncStreamsFromTasks(tasks) {
       || task.metadata?.message
       || (status === "waiting_approval" ? "waiting for approval" : `working on: ${task.title || "active task"}`);
     stream.activity = taskActivity;
-    stream.status = active ? (status === "waiting_approval" ? "waiting" : "working") : statusForTaskStream(status);
+    const staleActive = active
+      && ["done", "error", "cancelled"].includes(String(existing?.status || ""))
+      && Number(existing?.lastAt || 0) >= (Date.parse(timestamp) || 0);
+    stream.status = staleActive
+      ? existing.status
+      : active
+        ? (status === "waiting_approval" ? "waiting" : "working")
+        : statusForTaskStream(status);
     stream.updatedAt = timestamp;
     stream.lastAt = Date.parse(timestamp) || stream.lastAt || Date.now();
     if (!stream.activityEvents?.length || stream.activityEvents[0]?.message !== taskActivity) {
@@ -2462,7 +2575,15 @@ function queueStreamRender() {
 
 function renderStreams() {
   if (!el.streamConsole || !el.streamStats) return;
-  const active = state.streams[0];
+  const sourceStreams = state.streams.filter((stream) => stream.source === state.activeRuntime);
+  const focusConversationId = el.streamPanel?.dataset.focusConversationId || "";
+  const focusedStream = focusConversationId
+    ? sourceStreams.find((stream) => stream.conversationId === focusConversationId)
+    : undefined;
+  const visibleStreams = focusedStream
+    ? [focusedStream, ...sourceStreams.filter((stream) => stream !== focusedStream)]
+    : sourceStreams;
+  const active = visibleStreams[0];
 
   if (!active) {
     el.streamStats.innerHTML = `<span class="stream-pill idle">STANDBY</span><span>no active run</span>`;
@@ -2481,7 +2602,7 @@ function renderStreams() {
     <span>${escapeHtml(formatElapsed(active))}</span>
   `;
 
-  el.streamConsole.innerHTML = state.streams.map((stream, index) => {
+  el.streamConsole.innerHTML = visibleStreams.map((stream, index) => {
     const approvalRequired = stream.status === "waiting";
     const activityEvents = approvalRequired
       ? [{
