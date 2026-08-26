@@ -27,6 +27,8 @@ const hermesTuiRelay = new HermesTuiRelay(config.hermes.relay, {
 const registry = new RuntimeRegistry();
 const adapterCache = new Map();
 const rateBuckets = new Map();
+const acceptedMessageRequests = new Map();
+const acceptedMessageRequestTtlMs = 5 * 60 * 1000;
 
 if (!config.server.authToken || config.server.authToken.length < 32) {
   throw new Error("CONTROL_AUTH_TOKEN must be set to a random value of at least 32 characters.");
@@ -330,6 +332,59 @@ async function handleApi(request, response, requestUrl) {
   if (method === "POST" && pathname === "/api/messages") {
     const body = await readJson(request);
     const adapter = registry.get(body.source);
+    if (body.asyncAck === true) {
+      const requestId = String(body.requestId || "").trim().slice(0, 160);
+      const content = String(body.content || body.prompt || body.message || "").trim();
+      if (!requestId) throw httpError(400, "Async message request requires requestId.");
+      if (!content) throw httpError(400, "Message content is empty.");
+
+      pruneAcceptedMessageRequests();
+      const requestKey = `${body.source}:${requestId}`;
+      const existing = acceptedMessageRequests.get(requestKey);
+      if (existing) {
+        writeJson(response, 202, existing.response);
+        return;
+      }
+
+      const acceptedAt = new Date().toISOString();
+      const accepted = {
+        ok: true,
+        accepted: true,
+        requestId,
+        message: {
+          id: `accepted:${body.source}:${requestId}`,
+          conversationId: body.conversationId,
+          source: body.source,
+          role: "user",
+          content,
+          createdAt: acceptedAt,
+          metadata: { accepted: true, requestId }
+        }
+      };
+      acceptedMessageRequests.set(requestKey, { acceptedAt: Date.now(), response: accepted });
+      Promise.resolve()
+        .then(() => adapter.sendMessage(body))
+        .then((message) => {
+          acceptedMessageRequests.set(requestKey, {
+            acceptedAt: Date.now(),
+            response: { ...accepted, delivered: true, message }
+          });
+          invalidateAdapterCache();
+        })
+        .catch((error) => {
+          acceptedMessageRequests.set(requestKey, {
+            acceptedAt: Date.now(),
+            response: { ...accepted, delivered: false, deliveryFailed: true }
+          });
+          eventBus.publish({
+            source: body.source,
+            type: "runtime.error",
+            payload: { action: "send", requestId, error: error.message }
+          });
+        });
+      writeJson(response, 202, accepted);
+      return;
+    }
     let message;
     try {
       message = await adapter.sendMessage(body);
@@ -369,6 +424,19 @@ async function handleApi(request, response, requestUrl) {
     ok: false,
     error: `Route not found: ${method} ${pathname}`
   });
+}
+
+function pruneAcceptedMessageRequests() {
+  const cutoff = Date.now() - acceptedMessageRequestTtlMs;
+  for (const [key, value] of acceptedMessageRequests) {
+    if (value.acceptedAt < cutoff) acceptedMessageRequests.delete(key);
+  }
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 function summarizeActionResult(result) {

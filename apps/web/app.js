@@ -3,6 +3,7 @@ const initialTheme = detectTheme();
 const bootStartedAt = performance.now();
 
 const state = {
+  clientId: readOrCreateControlClientId(),
   theme: initialTheme,
   stageMode: isStageMode(),
   activeRuntime: "codex",
@@ -42,6 +43,9 @@ const state = {
   runtimeRefreshPromise: undefined,
   resumeRefreshTimer: undefined,
   promptOpen: false,
+  promptSending: false,
+  actionLocks: {},
+  promptRequestSequence: 0,
   lastPrompt: "",
   tilt: {
     enabled: false,
@@ -969,6 +973,9 @@ async function runAction(action, button) {
     flashButton(button, "is-failed");
     return false;
   }
+  const actionKey = `${source}:${action}`;
+  if (Number(state.actionLocks[actionKey] || 0) > Date.now()) return false;
+  state.actionLocks[actionKey] = Date.now() + 600;
   const payload = {
     prompt,
     title: prompt ? prompt.slice(0, 80) : undefined,
@@ -1037,7 +1044,10 @@ function approvalDecisionForButton(action, button) {
 }
 
 async function sendPrompt(button) {
+  if (state.promptSending) return false;
+
   const source = state.activeRuntime;
+  const draft = el.promptInput.value;
   const content = el.promptInput.value.trim();
   if (!content) {
     openPromptSheet();
@@ -1046,9 +1056,19 @@ async function sendPrompt(button) {
     return false;
   }
 
-  setRuntimeSignal(source, "thinking", "RUN", "prompt queued", { unread: false });
+  state.promptSending = true;
+  setPromptSendingState(button, true);
+  el.promptInput.value = "";
+  el.promptStrip.classList.remove("has-input");
+  updatePromptPreview(content);
+  resizePromptInput();
+  closePromptSheet();
+
+  setRuntimeSignal(source, "thinking", "SENDING", "prompt submit in progress", { unread: false });
   setRuntimeActivity(source, "working");
   const pendingKey = primePendingStream(source, content);
+  state.promptRequestSequence += 1;
+  const requestId = `${state.clientId}:${Date.now()}:${state.promptRequestSequence}`;
   el.promptStrip.classList.add("is-sending");
   let sent = false;
   try {
@@ -1060,23 +1080,32 @@ async function sendPrompt(button) {
           reasoning: state.reasoningLevel,
           surface: source === "codex" ? state.codexSurfaceMode : undefined,
           conversationId: selectedConversationIdFor(source),
-          resumeLast: shouldResumeCurrent(source, "send")
+          resumeLast: shouldResumeCurrent(source, "send"),
+          asyncAck: true,
+          requestId
         });
-        rekeyPendingStream(pendingKey, data.message);
-        addLocalEvent(source, "conversation.message.created", "Prompt sent.", data.message);
+        const acknowledgedStream = rekeyPendingStream(pendingKey, data.message);
+        const completedBeforeAcknowledgement = ["done", "error"].includes(acknowledgedStream?.status);
+        addLocalEvent(
+          source,
+          completedBeforeAcknowledgement ? "ui.prompt.acknowledged" : "conversation.message.created",
+          completedBeforeAcknowledgement ? "Prompt acknowledged after completion." : "Prompt sent.",
+          data.message
+        );
         state.lastPrompt = content;
-        el.promptInput.value = "";
-        el.promptStrip.classList.remove("has-input");
         updatePromptPreview(content);
-        resizePromptInput();
-        closePromptSheet();
         afterAction("send").catch((error) => {
           addLocalEvent(source, "runtime.error", error.message);
         });
-        setRuntimeActivity(source, "working");
+        if (!completedBeforeAcknowledgement) setRuntimeActivity(source, "working");
         sent = true;
         return true;
       } catch (error) {
+        if (!el.promptInput.value.trim()) el.promptInput.value = draft;
+        el.promptStrip.classList.toggle("has-input", Boolean(el.promptInput.value.trim()));
+        updatePromptPreview();
+        resizePromptInput();
+        openPromptSheet({ focus: true });
         markPendingStreamFailed(pendingKey, error.message);
         addLocalEvent(source, "runtime.error", error.message);
         setRuntimeActivity(source, "error");
@@ -1085,9 +1114,20 @@ async function sendPrompt(button) {
       }
     });
   } finally {
+    state.promptSending = false;
+    setPromptSendingState(button, false);
     el.promptStrip.classList.remove("is-sending");
   }
   return sent;
+}
+
+function setPromptSendingState(button, sending) {
+  if (!button) return;
+  button.disabled = sending;
+  button.classList.toggle("is-sending", sending);
+  button.setAttribute("aria-busy", String(sending));
+  const label = button.querySelector("span");
+  if (label) label.textContent = sending ? "SENDING" : "RUN";
 }
 
 function signalStatusForAction(action) {
@@ -2260,9 +2300,9 @@ function primePendingStream(source, prompt) {
 
 function rekeyPendingStream(pendingKey, message) {
   const stream = state.streamMap.get(pendingKey);
-  if (!stream) return;
+  if (!stream) return undefined;
   const nextKey = streamKeyFromMessage(message, stream.source);
-  if (!nextKey || nextKey === pendingKey) return;
+  if (!nextKey || nextKey === pendingKey) return stream;
 
   const existing = state.streamMap.get(nextKey);
   if (existing && existing !== stream) {
@@ -2277,7 +2317,7 @@ function rekeyPendingStream(pendingKey, message) {
       ...state.streams.filter((item) => item.key !== pendingKey && item.key !== nextKey)
     ].slice(0, 6);
     queueStreamRender();
-    return;
+    return existing;
   }
 
   state.streamMap.delete(pendingKey);
@@ -2286,6 +2326,20 @@ function rekeyPendingStream(pendingKey, message) {
   stream.taskId = message?.metadata?.taskId || stream.taskId;
   stream.streamId = message?.metadata?.streamId || stream.streamId;
   state.streamMap.set(nextKey, stream);
+  return stream;
+}
+
+function readOrCreateControlClientId() {
+  const key = "hermes_control_client_id_v1";
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored) return stored;
+    const created = globalThis.crypto?.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    window.localStorage.setItem(key, created);
+    return created;
+  } catch {
+    return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
 }
 
 function markPendingStreamFailed(pendingKey, message) {
