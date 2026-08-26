@@ -21,6 +21,8 @@ const state = {
   tasks: [],
   conversations: [],
   approvals: [],
+  completionNotices: readStoredCompletionNotices(),
+  lastCompletionBadgeCount: 0,
   runtimeErrors: [],
   runtimeActivity: {
     codex: "idle",
@@ -502,7 +504,13 @@ function bindControls() {
     const streamPanel = closestFromEvent(event, "[data-stream-panel]");
     const inspectorButton = closestFromEvent(event, "[data-inspector]");
     const inspectorClose = closestFromEvent(event, "[data-inspector-close]");
+    const taskResponseRow = closestFromEvent(event, "[data-task-response]");
     const conversationRow = closestFromEvent(event, "[data-conversation-id]");
+
+    if (taskResponseRow) {
+      openTaskResponse(taskResponseRow);
+      return;
+    }
 
     if (conversationRow) {
       pulseHaptic(8);
@@ -1489,13 +1497,25 @@ function renderAgents() {
 function renderTasks() {
   const source = state.sectionFilters.tasks;
   const tasks = state.tasks.filter((task) => task.source === source);
-  el.tasksList.innerHTML = tasks.map((task) => `
-    <div class="row task-row" data-task-id="${escapeHtml(task.id)}">
+  const taskKeys = new Set(tasks.map((task) => completionNoticeKey(task.source, task.id)));
+  const detachedNotices = state.completionNotices.filter((notice) => notice.source === source && !taskKeys.has(notice.key));
+  const noticeMarkup = detachedNotices.map((notice) => completionNoticeRowMarkup(notice)).join("");
+  const taskMarkup = tasks.map((task) => `
+    <button class="row task-row${taskCompletionNotice(task)?.unread ? " is-unread" : ""}" type="button"
+      data-task-id="${escapeHtml(task.id)}"
+      data-task-response="${escapeHtml(task.id)}"
+      data-source="${escapeHtml(task.source)}"
+      data-conversation-id-ref="${escapeHtml(task.conversationId || "")}">
       <strong><small>TASK</small> ${escapeHtml(task.title || task.id)}</strong>
       <span>${escapeHtml(taskStatusLabel(task))} / ${escapeHtml(taskSurfaceLabel(task))} / ${escapeHtml(taskProgressLabel(task))}</span>
       <small>${escapeHtml(taskActivityLabel(task))}${task.conversationId ? ` / session ${escapeHtml(shortId(task.conversationId))}` : ""}</small>
-    </div>
-  `).join("") || `<div class="empty">No ${source} tasks</div>`;
+      ${taskCompletionMarkup(task)}
+    </button>
+  `).join("");
+  el.tasksList.innerHTML = noticeMarkup || taskMarkup
+    ? `${noticeMarkup}${taskMarkup}`
+    : `<div class="empty">No ${source} tasks</div>`;
+  renderTaskCompletionIndicator();
 }
 
 function isTerminalTaskStatus(status) {
@@ -1594,6 +1614,7 @@ function applyTaskStateFromEvent(event) {
   if (Number.isFinite(event.payload?.progress)) task.progress = event.payload.progress;
   if (isTerminalTaskStatus(task.status)) task.progress = 100;
   state.tasks = state.tasks.slice(0, 50);
+  if (isCompletionEvent(event, task)) recordTaskCompletion(event, task);
   persistCache("tasks", state.tasks);
   syncStreamsFromTasks(state.tasks);
   renderTasks();
@@ -1621,6 +1642,215 @@ function shouldRejectLateLifecycleEvent(event, task) {
     "conversation.message.created",
     "approval.requested"
   ].includes(event.type);
+}
+
+function isCompletionEvent(event, task) {
+  const status = String(task?.status || "").toLowerCase();
+  if (["cancelled", "canceled", "blocked", "idle"].includes(status)) return false;
+  if (["task.completed", "task.failed", "runtime.error"].includes(event.type)) return true;
+  return event.type === "task.progress" && ["completed", "complete", "done", "failed", "error"].includes(status);
+}
+
+function completionNoticeKey(source, taskId) {
+  return `${String(source || "system")}:${String(taskId || "unknown")}`;
+}
+
+function findStreamByIdentity(identity, streams = state.streams) {
+  return streams.find((stream) => {
+    if (identity.source && stream.source !== identity.source) return false;
+    if (identity.taskId && stream.taskId === identity.taskId) return true;
+    if (identity.streamId && stream.streamId === identity.streamId) return true;
+    return Boolean(identity.conversationId && stream.conversationId === identity.conversationId);
+  });
+}
+
+function recordTaskCompletion(event, task) {
+  const key = completionNoticeKey(task.source, task.id);
+  const completedAt = event.timestamp || task.updatedAt || new Date().toISOString();
+  const existing = state.completionNotices.find((notice) => notice.key === key);
+  const stream = matchingTaskStream(task);
+  const output = assistantTextFromEvent(event)
+    || stream?.text
+    || task.metadata?.observedAssistantText
+    || task.metadata?.assistantText
+    || task.metadata?.output
+    || task.metadata?.response
+    || existing?.output
+    || "";
+  const summary = compactLogText(output || completedDetailForEvent(event) || task.metadata?.lastActivity || task.title || "response ready").slice(0, 140);
+  const notice = {
+    key,
+    source: task.source,
+    taskId: task.id,
+    conversationId: task.conversationId || event.conversationId || "",
+    status: String(task.status || "completed").toLowerCase(),
+    title: compactLogText(task.title || "Completed task").slice(0, 100),
+    summary,
+    output,
+    completedAt,
+    unread: existing?.completedAt === completedAt ? Boolean(existing.unread) : true
+  };
+  state.completionNotices = [notice, ...state.completionNotices.filter((item) => item.key !== key)].slice(0, 20);
+  persistCompletionNotices();
+}
+
+function taskCompletionNotice(task) {
+  return state.completionNotices.find((notice) => notice.key === completionNoticeKey(task.source, task.id));
+}
+
+function matchingTaskStream(task) {
+  return findStreamByIdentity({ source: task.source, taskId: task.id, conversationId: task.conversationId });
+}
+
+function taskCompletionMarkup(task) {
+  const status = String(task.status || "").toLowerCase();
+  if (!["completed", "complete", "done", "failed", "error"].includes(status)) return "";
+  const notice = taskCompletionNotice(task);
+  const stream = matchingTaskStream(task);
+  const failed = ["failed", "error"].includes(status);
+  const summary = notice?.summary || compactLogText(stream?.text || task.metadata?.lastActivity || task.title || "response ready");
+  return `
+    <span class="task-completion" data-status="${failed ? "error" : "done"}">
+      <b>${failed ? "ERROR / CHECK OUTPUT" : "DONE / RESPONSE READY"}</b>
+      <span>${escapeHtml(summary)}</span>
+      <small>${escapeHtml(formatTime(notice?.completedAt || task.updatedAt || task.createdAt))} / tap for output</small>
+    </span>
+  `;
+}
+
+function completionNoticeRowMarkup(notice) {
+  const failed = ["failed", "error"].includes(String(notice.status || "").toLowerCase());
+  return `
+    <button class="row task-row task-completion-row${notice.unread ? " is-unread" : ""}" type="button"
+      data-task-id="${escapeHtml(notice.taskId)}"
+      data-task-response="${escapeHtml(notice.taskId)}"
+      data-source="${escapeHtml(notice.source)}"
+      data-conversation-id-ref="${escapeHtml(notice.conversationId || "")}">
+      <strong><small>RESPONSE</small> ${escapeHtml(notice.title || "Completed task")}</strong>
+      <span>${failed ? "ERROR / CHECK OUTPUT" : "DONE / RESPONSE READY"}</span>
+      <small>${escapeHtml(notice.summary || "response ready")}</small>
+    </button>
+  `;
+}
+
+function renderTaskCompletionIndicator() {
+  const button = document.querySelector('[data-inspector="tasks"]');
+  if (!button) return;
+  const unreadCount = state.completionNotices.filter((notice) => notice.unread).length;
+  let badge = button.querySelector(".premium-nav-badge");
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "premium-nav-badge";
+    badge.setAttribute("aria-hidden", "true");
+    button.append(badge);
+  }
+  badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+  badge.hidden = unreadCount === 0;
+  button.classList.toggle("has-completion", unreadCount > 0);
+  button.dataset.completionCount = String(unreadCount);
+  const subtitle = button.querySelector("small");
+  if (subtitle) subtitle.textContent = unreadCount ? `${unreadCount} response${unreadCount === 1 ? "" : "s"} ready` : "live runs";
+  if (unreadCount > state.lastCompletionBadgeCount) {
+    button.classList.remove("completion-arrived");
+    void button.offsetWidth;
+    button.classList.add("completion-arrived");
+    window.setTimeout(() => button.classList.remove("completion-arrived"), 1100);
+  }
+  state.lastCompletionBadgeCount = unreadCount;
+}
+
+function markTaskCompletionsRead(source) {
+  let changed = false;
+  state.completionNotices = state.completionNotices.map((notice) => {
+    if (!notice.unread || notice.source !== source) return notice;
+    changed = true;
+    return { ...notice, unread: false };
+  });
+  if (changed) persistCompletionNotices();
+  renderTaskCompletionIndicator();
+}
+
+function openTaskResponse(row) {
+  const source = row.dataset.source || state.activeRuntime;
+  const taskId = row.dataset.taskResponse;
+  const conversationId = row.dataset.conversationIdRef;
+  pulseHaptic(8);
+  if (source !== state.activeRuntime) setActiveRuntime(source);
+  ensureStoredTaskResponseStream(source, taskId, conversationId);
+  markTaskCompletionsRead(source);
+  closePremiumInspector();
+  renderTasks();
+  const panel = document.querySelector("[data-stream-panel]");
+  if (panel) {
+    panel.dataset.focusTaskId = taskId || "";
+    panel.dataset.focusConversationId = conversationId || "";
+    panel.classList.add("is-expanded", "is-alert");
+    panel.setAttribute("aria-expanded", "true");
+    renderStreams();
+    window.setTimeout(() => panel.classList.remove("is-alert"), 1100);
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  addLocalEvent(source, "ui.task.response.opened", `Response opened for ${taskId || "completed task"}.`);
+}
+
+function ensureStoredTaskResponseStream(source, taskId, conversationId) {
+  const existing = findStreamByIdentity({ source, taskId, conversationId });
+  const notice = state.completionNotices.find((item) => item.key === completionNoticeKey(source, taskId));
+  const task = state.tasks.find((item) => item.source === source && item.id === taskId);
+  const metadataOutput = [task?.metadata?.observedAssistantText, task?.metadata?.assistantText, task?.metadata?.output, task?.metadata?.response]
+    .find((value) => typeof value === "string" && value.trim());
+  const output = notice?.output || metadataOutput || "";
+  if (existing) {
+    if (output.length > String(existing.text || "").length) existing.text = output;
+    return existing;
+  }
+  if (!output) return undefined;
+  const timestamp = notice?.completedAt || task?.updatedAt || task?.createdAt || new Date().toISOString();
+  const stream = ensureStream(`stored-response:${completionNoticeKey(source, taskId)}`, {
+    source,
+    taskId,
+    conversationId,
+    timestamp,
+    payload: {}
+  });
+  stream.taskId = taskId || stream.taskId;
+  stream.conversationId = conversationId || task?.conversationId || stream.conversationId;
+  stream.prompt = notice?.title || task?.title || "Completed task";
+  stream.text = output;
+  stream.status = ["failed", "error"].includes(String(notice?.status || task?.status || "").toLowerCase()) ? "error" : "done";
+  stream.activity = "saved task response";
+  stream.startedAt = Date.parse(task?.createdAt || timestamp) || Date.now();
+  stream.lastAt = Date.parse(timestamp) || Date.now();
+  stream.updatedAt = timestamp;
+  state.streams = [stream, ...state.streams.filter((item) => item.key !== stream.key)].slice(0, 6);
+  return stream;
+}
+
+function readStoredCompletionNotices() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem("hermes_control_completion_notices_v1") || "[]");
+    if (!Array.isArray(parsed)) return [];
+    const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    return parsed.filter((notice) => notice?.key && notice?.source && (Date.parse(notice.completedAt || "") || 0) >= cutoff).slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+function persistCompletionNotices() {
+  const persistable = state.completionNotices.slice(0, 20).map((notice, index) =>
+    index < 8 ? notice : { ...notice, output: undefined }
+  );
+  try {
+    window.localStorage.setItem("hermes_control_completion_notices_v1", JSON.stringify(persistable));
+  } catch {
+    try {
+      const summariesOnly = persistable.map(({ output, ...notice }) => notice);
+      window.localStorage.setItem("hermes_control_completion_notices_v1", JSON.stringify(summariesOnly));
+    } catch {
+      // Live task data remains available when browser storage is unavailable.
+    }
+  }
 }
 
 function taskStatusLabel(task) {
@@ -2576,10 +2806,12 @@ function queueStreamRender() {
 function renderStreams() {
   if (!el.streamConsole || !el.streamStats) return;
   const sourceStreams = state.streams.filter((stream) => stream.source === state.activeRuntime);
+  const focusTaskId = el.streamPanel?.dataset.focusTaskId || "";
   const focusConversationId = el.streamPanel?.dataset.focusConversationId || "";
-  const focusedStream = focusConversationId
-    ? sourceStreams.find((stream) => stream.conversationId === focusConversationId)
-    : undefined;
+  const focusedStream = sourceStreams.find((stream) =>
+    (focusTaskId && stream.taskId === focusTaskId)
+    || (focusConversationId && stream.conversationId === focusConversationId)
+  );
   const visibleStreams = focusedStream
     ? [focusedStream, ...sourceStreams.filter((stream) => stream !== focusedStream)]
     : sourceStreams;
@@ -2615,7 +2847,7 @@ function renderStreams() {
       : (stream.activityEvents || []).slice(0, 4);
 
     return `
-    <article class="stream-card ${escapeHtml(stream.status)}">
+    <article class="stream-card ${escapeHtml(stream.status)}${stream === focusedStream ? " is-focused" : ""}">
       <div class="stream-card-head">
         <strong>${escapeHtml(stream.source.toUpperCase())} ${escapeHtml(streamSignalLabel(stream))}</strong>
         <span>${escapeHtml(index === 0 ? "live" : "recent")} / ${escapeHtml(formatElapsed(stream))}</span>
