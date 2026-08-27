@@ -437,6 +437,7 @@ See [SECURITY.md](SECURITY.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - [PUBLIC_RELEASE_AUDIT.md](PUBLIC_RELEASE_AUDIT.md) - release verification;
 - [docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md) - clean-machine test plan;
 - [docs/PATCH_04_WEB_PUSH.md](docs/PATCH_04_WEB_PUSH.md) - secure opt-in Web Push setup and verification;
+- [docs/STABILITY_OUTPUT_PUSH_PATCH_SERIES.md](docs/STABILITY_OUTPUT_PUSH_PATCH_SERIES.md) - ordered installation, verification and rollback guide for the stability update;
 - [docs/HERMES_GATEWAY_TUI.md](docs/HERMES_GATEWAY_TUI.md) - optional Gateway/TUI and approval bridge;
 - [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md) - upstream audit.
 
