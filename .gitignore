@@ -2,6 +2,7 @@
 node_modules/
 outputs/
 data/*.log
+data/web-push-subscriptions.json*
 backups/
 .runtime/
 __pycache__/

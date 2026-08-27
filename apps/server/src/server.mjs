@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { EventBus } from "./infrastructure/EventBus.mjs";
+import { PushNotificationService } from "./infrastructure/PushNotificationService.mjs";
 import { loadConfig } from "./infrastructure/config.mjs";
 import { RuntimeRegistry } from "./application/RuntimeRegistry.mjs";
 import { HermesRuntimeAdapter } from "./adapters/hermes/HermesRuntimeAdapter.mjs";
@@ -18,6 +19,15 @@ const webRoot = path.join(projectRoot, "apps", "web");
 
 const config = loadConfig(projectRoot);
 const eventBus = new EventBus();
+const pushNotifications = new PushNotificationService(config.push, {
+  logger: (message) => console.warn(message)
+});
+await pushNotifications.start();
+if (config.push.enabled) {
+  eventBus.subscribe((event) => pushNotifications.handleEvent(event), {
+    types: ["task.completed", "task.failed"]
+  });
+}
 const hermesBridge = new HermesBridgeReceiver(config.hermes.bridge, eventBus, {
   logger: (message) => console.warn(message)
 });
@@ -155,8 +165,30 @@ async function handleApi(request, response, requestUrl) {
         mode: config.codex.experimentalDesktop.enabled ? "experimental-desktop" : "cli",
         surface: config.codex.experimentalDesktop.enabled ? "desktop" : "cli",
         experimental: config.codex.experimentalDesktop.enabled
-      }
+      },
+      push: pushNotifications.status()
     });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/push/status") {
+    writeJson(response, 200, pushNotifications.status());
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/push/subscriptions") {
+    requireSameOriginPushRequest(request);
+    requireJsonContentType(request);
+    const body = await readJson(request, { maxBytes: 16 * 1024 });
+    writeJson(response, 201, { ok: true, ...pushNotifications.subscribe(body.subscription) });
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/push/unsubscribe") {
+    requireSameOriginPushRequest(request);
+    requireJsonContentType(request);
+    const body = await readJson(request, { maxBytes: 16 * 1024 });
+    writeJson(response, 200, { ok: true, ...pushNotifications.unsubscribe(body.endpoint) });
     return;
   }
 
@@ -611,6 +643,20 @@ function setCommonHeaders(response, request) {
   response.setHeader("Access-Control-Allow-Credentials", "true");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
+}
+
+function requireSameOriginPushRequest(request) {
+  const fetchSite = String(request.headers["sec-fetch-site"] || "").toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin") {
+    throw httpError(403, "Web Push subscription changes require a same-origin request.");
+  }
+  const origin = String(request.headers.origin || "").trim();
+  if (!origin) return;
+  let originUrl;
+  try { originUrl = new URL(origin); } catch { throw httpError(403, "Invalid request origin."); }
+  if (originUrl.host !== String(request.headers.host || "")) {
+    throw httpError(403, "Web Push subscription changes require a same-origin request.");
+  }
 }
 
 async function readJson(request, options = {}) {

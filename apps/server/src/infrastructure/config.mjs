@@ -30,6 +30,17 @@ export function loadConfig(projectRoot) {
       rateLimitWindowMs: numberFrom(env.CONTROL_RATE_LIMIT_WINDOW_MS, 60000),
       rateLimitMax: numberFrom(env.CONTROL_RATE_LIMIT_MAX, 120)
     },
+    push: {
+      enabled: env.CONTROL_WEB_PUSH_ENABLED === "true",
+      publicKey: env.CONTROL_WEB_PUSH_PUBLIC_KEY || "",
+      privateKey: env.CONTROL_WEB_PUSH_PRIVATE_KEY || "",
+      subject: env.CONTROL_WEB_PUSH_SUBJECT || "https://github.com/filipj9/Hermes-Control-Deck",
+      ttlSeconds: numberFrom(env.CONTROL_WEB_PUSH_TTL_SECONDS, 3600),
+      maxSubscriptions: numberFrom(env.CONTROL_WEB_PUSH_MAX_SUBSCRIPTIONS, 10),
+      stateFile: env.CONTROL_WEB_PUSH_STATE_FILE
+        ? path.resolve(projectRoot, env.CONTROL_WEB_PUSH_STATE_FILE)
+        : path.join(projectRoot, "data", "web-push-subscriptions.json")
+    },
     web: {
       host: env.CONTROL_WEB_HOST || "127.0.0.1",
       port: numberFrom(env.CONTROL_WEB_PORT, 4241)

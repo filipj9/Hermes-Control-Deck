@@ -40,7 +40,8 @@ The public edition supports:
   the configured Hermes WebUI exposes compatible routes;
 - Codex CLI task control, JSONL streaming, stop, continue/new actions, and
   in-memory conversation display;
-- an installable mobile PWA shell with authenticated API and SSE connections.
+- an installable mobile PWA shell with authenticated API and SSE connections;
+- optional background Web Push notifications for completed and failed tasks.
 
 Two optional Hermes integrations are also included, disabled by default:
 
@@ -435,6 +436,7 @@ See [SECURITY.md](SECURITY.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) - external notices;
 - [PUBLIC_RELEASE_AUDIT.md](PUBLIC_RELEASE_AUDIT.md) - release verification;
 - [docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md) - clean-machine test plan;
+- [docs/PATCH_04_WEB_PUSH.md](docs/PATCH_04_WEB_PUSH.md) - secure opt-in Web Push setup and verification;
 - [docs/HERMES_GATEWAY_TUI.md](docs/HERMES_GATEWAY_TUI.md) - optional Gateway/TUI and approval bridge;
 - [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md) - upstream audit.
 

@@ -8,6 +8,11 @@ Configuration is read from `.env` and process environment. Never commit `.env`.
 | `CONTROL_SERVER_PORT` | no | default `4240` |
 | `CONTROL_AUTH_TOKEN` | yes | random admin token, minimum 32 characters |
 | `CONTROL_ALLOWED_ORIGINS` | no | comma-separated explicit origins |
+| `CONTROL_WEB_PUSH_ENABLED` | no | enables opt-in PWA completion notifications; default false |
+| `CONTROL_WEB_PUSH_PUBLIC_KEY` | with Web Push | VAPID public key exposed to the authenticated PWA |
+| `CONTROL_WEB_PUSH_PRIVATE_KEY` | with Web Push | private VAPID key; server-only and never committed |
+| `CONTROL_WEB_PUSH_SUBJECT` | with Web Push | HTTPS or `mailto:` VAPID contact URI |
+| `CONTROL_WEB_PUSH_STATE_FILE` | no | local subscription-state path |
 | `CONTROL_MAX_BODY_BYTES` | no | request body cap |
 | `CONTROL_RATE_LIMIT_MAX` | no | requests per rate window and source |
 | `HERMES_BASE_URL` | yes when enabled | user-owned Hermes WebUI URL |

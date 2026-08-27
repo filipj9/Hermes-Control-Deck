@@ -1,4 +1,4 @@
-const CACHE_NAME = "hermes-control-clean-shell-v1";
+const CACHE_NAME = "hermes-control-clean-shell-v2";
 const CORE_ASSETS = [
   "/",
   "/index.html",
@@ -58,6 +58,24 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+self.addEventListener("push", (event) => {
+  const payload = readPushPayload(event.data);
+  event.waitUntil(self.registration.showNotification(payload.title, {
+    body: payload.body,
+    tag: payload.tag,
+    icon: payload.icon || "/assets/pwa-clean-icon-192.png",
+    badge: payload.badge || "/assets/pwa-clean-icon-192.png",
+    data: payload.data || { url: "/" },
+    renotify: false
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  event.waitUntil(openOrFocus(target));
+});
+
 function isShellAsset(pathname) {
   return pathname === "/"
     || pathname.endsWith(".html")
@@ -76,4 +94,35 @@ async function networkFirst(request) {
   } catch {
     return await caches.match(request) || await caches.match("/index.html");
   }
+}
+
+function readPushPayload(data) {
+  try {
+    const parsed = data?.json();
+    return {
+      title: String(parsed?.title || "Hermes Control").slice(0, 80),
+      body: String(parsed?.body || "Task update available.").slice(0, 160),
+      tag: String(parsed?.tag || "hermes-control-task").slice(0, 120),
+      icon: parsed?.icon,
+      badge: parsed?.badge,
+      data: parsed?.data
+    };
+  } catch {
+    return {
+      title: "Hermes Control",
+      body: "Task update available.",
+      tag: "hermes-control-task",
+      data: { url: "/" }
+    };
+  }
+}
+
+async function openOrFocus(target) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const client = windows.find((item) => new URL(item.url).origin === self.location.origin);
+  if (client) {
+    if ("navigate" in client) await client.navigate(target);
+    return await client.focus();
+  }
+  return await self.clients.openWindow(target);
 }

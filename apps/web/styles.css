@@ -2452,6 +2452,36 @@ h2 {
   white-space: pre-wrap;
 }
 
+.premium-notification-toggle {
+  display: grid;
+  grid-template-columns: 8px auto;
+  gap: 2px 7px;
+  align-items: center;
+  min-width: 84px;
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 20, 26, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #11161d;
+  box-shadow: 0 7px 20px rgba(31, 47, 65, 0.1);
+  text-align: left;
+}
+
+.premium-notification-toggle > span {
+  grid-row: 1 / span 2;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8b929a;
+}
+
+.premium-notification-toggle strong { font-size: 0.61rem; letter-spacing: 0.12em; }
+.premium-notification-toggle small { color: #737b84; font-size: 0.48rem; }
+.premium-notification-toggle[data-state="on"] > span { background: #147d55; box-shadow: 0 0 10px rgba(20, 125, 85, 0.38); }
+.premium-notification-toggle[data-state="error"],
+.premium-notification-toggle[data-state="blocked"] { border-color: rgba(176, 48, 48, 0.4); color: #9c2424; }
+.premium-notification-toggle[hidden] { display: none; }
+
 .prompt-shell {
   position: relative;
 }

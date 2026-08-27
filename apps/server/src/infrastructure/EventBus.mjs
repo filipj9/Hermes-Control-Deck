@@ -4,12 +4,13 @@ export class EventBus {
   constructor() {
     this.events = [];
     this.clients = new Set();
+    this.listeners = new Set();
     this.retentionMs = 15 * 60 * 1000;
     this.maxEvents = 300;
   }
 
   publish(input) {
-    const event = createEvent(input);
+    const event = cloneEvent(createEvent(input));
     if (shouldKeepInHistory(event)) {
       this.events.unshift(event);
       this.pruneHistory();
@@ -24,7 +25,26 @@ export class EventBus {
       }
     }
 
+    for (const entry of this.listeners) {
+      if (entry.types && !entry.types.has(event.type)) continue;
+      Promise.resolve()
+        .then(() => entry.listener(event))
+        .catch(() => {
+          // Observers are isolated from runtime control and SSE delivery.
+        });
+    }
+
     return event;
+  }
+
+  subscribe(listener, options = {}) {
+    if (typeof listener !== "function") throw new TypeError("Event listener must be a function.");
+    const entry = {
+      listener,
+      types: Array.isArray(options.types) && options.types.length ? new Set(options.types) : undefined
+    };
+    this.listeners.add(entry);
+    return () => this.listeners.delete(entry);
   }
 
   list(limit = 100, options = {}) {
@@ -66,6 +86,14 @@ export class EventBus {
     this.events = this.events
       .filter((event) => Date.parse(event.timestamp) >= since)
       .slice(0, this.maxEvents);
+  }
+}
+
+function cloneEvent(event) {
+  try {
+    return structuredClone(event);
+  } catch {
+    return JSON.parse(JSON.stringify(event));
   }
 }
 

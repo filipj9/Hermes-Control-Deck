@@ -23,6 +23,14 @@ const state = {
   approvals: [],
   completionNotices: readStoredCompletionNotices(),
   lastCompletionBadgeCount: 0,
+  push: {
+    serverEnabled: false,
+    publicKey: "",
+    supported: false,
+    subscribed: false,
+    permission: "default",
+    registrationPromise: undefined
+  },
   runtimeErrors: [],
   runtimeActivity: {
     codex: "idle",
@@ -244,13 +252,14 @@ async function boot() {
   bindControls();
   bindPrompt();
   initTilt();
-  registerServiceWorker();
+  state.push.registrationPromise = registerServiceWorker();
   if (isVioletTheme()) {
     markAppReady(650);
     ensureControlSession().then(async () => {
       connectEvents();
       startLiveRefresh();
       await refreshAll();
+      await refreshPushControl().catch(() => renderPushControl("OFF"));
     }).catch((error) => {
       addLocalEvent(state.activeRuntime, "runtime.error", error.message || "Refresh failed.");
       setLed("error", "ERR");
@@ -263,6 +272,7 @@ async function boot() {
     connectEvents();
     startLiveRefresh();
     await refreshAll();
+    await refreshPushControl().catch(() => renderPushControl("OFF"));
   } finally {
     markAppReady();
   }
@@ -506,6 +516,22 @@ function bindControls() {
     const inspectorClose = closestFromEvent(event, "[data-inspector-close]");
     const taskResponseRow = closestFromEvent(event, "[data-task-response]");
     const conversationRow = closestFromEvent(event, "[data-conversation-id]");
+    const pushToggle = closestFromEvent(event, "[data-push-toggle]");
+
+    if (pushToggle) {
+      pulseHaptic(8);
+      await withBusy(pushToggle, async () => {
+        try {
+          await togglePushNotifications();
+          return true;
+        } catch (error) {
+          addLocalEvent(state.activeRuntime, "runtime.error", error.message || "Notifications failed.");
+          renderPushControl("ERROR");
+          return false;
+        }
+      });
+      return;
+    }
 
     if (taskResponseRow) {
       openTaskResponse(taskResponseRow);
@@ -3304,12 +3330,108 @@ function isStageMode() {
 }
 
 function registerServiceWorker() {
-  if (!("serviceWorker" in navigator)) return;
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/service-worker.js", { updateViaCache: "none" }).catch(() => {
-      // PWA caching is a bonus; the control deck must stay usable without it.
-    });
+  if (!("serviceWorker" in navigator)) return Promise.resolve(undefined);
+  const register = () => navigator.serviceWorker
+    .register("/service-worker.js", { updateViaCache: "none" })
+    .catch(() => undefined);
+  if (document.readyState === "complete") return register();
+  return new Promise((resolve) => {
+    window.addEventListener("load", () => resolve(register()), { once: true });
   });
+}
+
+async function refreshPushControl() {
+  const browserSupported = "Notification" in window
+    && "serviceWorker" in navigator
+    && "PushManager" in window;
+  state.push.supported = browserSupported;
+  state.push.permission = browserSupported ? Notification.permission : "unsupported";
+  const status = await getJson("/api/push/status");
+  state.push.serverEnabled = Boolean(status.enabled && status.ready);
+  state.push.publicKey = status.publicKey || "";
+  if (!browserSupported || !state.push.serverEnabled) {
+    state.push.subscribed = false;
+    renderPushControl(browserSupported ? "OFF" : "UNAVAILABLE");
+    return;
+  }
+  const registration = await pushRegistration();
+  let subscription = await registration?.pushManager.getSubscription();
+  if (subscription && !subscriptionUsesKey(subscription, state.push.publicKey)) {
+    await postJson("/api/push/unsubscribe", { endpoint: subscription.endpoint }).catch(() => {});
+    await subscription.unsubscribe().catch(() => {});
+    subscription = undefined;
+  }
+  state.push.subscribed = Boolean(subscription);
+  renderPushControl();
+}
+
+async function togglePushNotifications() {
+  if (!state.push.supported) throw new Error("Web Push is unavailable in this browser.");
+  if (!state.push.serverEnabled || !state.push.publicKey) throw new Error("Web Push is disabled on the server.");
+  if (!state.push.subscribed && Notification.permission !== "granted") {
+    const permission = await Notification.requestPermission();
+    state.push.permission = permission;
+    if (permission !== "granted") throw new Error("Notification permission was not granted.");
+  }
+
+  const registration = await pushRegistration();
+  if (!registration) throw new Error("Service worker is unavailable.");
+  const existing = await registration.pushManager.getSubscription();
+  if (existing) {
+    await postJson("/api/push/unsubscribe", { endpoint: existing.endpoint });
+    await existing.unsubscribe();
+    state.push.subscribed = false;
+    renderPushControl("OFF");
+    addLocalEvent(state.activeRuntime, "ui.push.disabled", "Background notifications disabled.");
+    return;
+  }
+
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: base64UrlToBytes(state.push.publicKey)
+  });
+  try {
+    await postJson("/api/push/subscriptions", { subscription: subscription.toJSON() });
+  } catch (error) {
+    await subscription.unsubscribe().catch(() => {});
+    throw error;
+  }
+  state.push.subscribed = true;
+  renderPushControl("ON");
+  addLocalEvent(state.activeRuntime, "ui.push.enabled", "Background notifications enabled.");
+}
+
+async function pushRegistration() {
+  await state.push.registrationPromise;
+  return await navigator.serviceWorker.ready;
+}
+
+function renderPushControl(label) {
+  const button = document.querySelector("#premiumNotificationToggle");
+  if (!button) return;
+  const visible = state.push.serverEnabled;
+  const stateLabel = label || (state.push.subscribed ? "ON" : state.push.permission === "denied" ? "BLOCKED" : "OFF");
+  button.hidden = !visible;
+  button.dataset.state = state.push.subscribed ? "on" : stateLabel.toLowerCase();
+  button.setAttribute("aria-pressed", state.push.subscribed ? "true" : "false");
+  button.setAttribute("title", state.push.subscribed ? "Disable task notifications" : "Enable task notifications");
+  const status = button.querySelector("small");
+  if (status) status.textContent = stateLabel;
+}
+
+function base64UrlToBytes(value) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const binary = atob((value + padding).replaceAll("-", "+").replaceAll("_", "/"));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function subscriptionUsesKey(subscription, publicKey) {
+  const existing = subscription?.options?.applicationServerKey;
+  if (!existing || !publicKey) return false;
+  const expected = base64UrlToBytes(publicKey);
+  const actual = new Uint8Array(existing);
+  if (actual.length !== expected.length) return false;
+  return actual.every((value, index) => value === expected[index]);
 }
 
 function markAppReady(minimumVisibleMs = 0) {
