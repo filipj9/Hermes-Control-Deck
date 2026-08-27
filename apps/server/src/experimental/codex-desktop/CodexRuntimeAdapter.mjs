@@ -1084,7 +1084,23 @@ export class CodexRuntimeAdapter {
       ? 0
       : (this.desktopIdleObservations.get(active.id) || 0) + 1;
     this.desktopIdleObservations.set(active.id, idleCount);
-    const confirmedIdle = idleCount >= 2;
+    const observer = this.latestSessionObserverSnapshot;
+    const observerManagedTurn = Boolean(
+      (this.sessionObserver || observer)
+      && (active.metadata?.sessionObserver || active.metadata?.observedTurnId)
+    );
+    const activeTurnId = String(active.metadata?.observedTurnId || active.metadata?.turnId || "");
+    const observerTurnId = String(observer?.turnId || "");
+    const observerConfirmsTerminal = Boolean(
+      observer?.threadId === snapshot.activeThreadKey
+      && observer.hasTurnState === true
+      && observer.working === false
+      && observer.waitingApproval !== true
+      && (!activeTurnId || !observerTurnId || activeTurnId === observerTurnId)
+    );
+    const confirmedIdle = observerManagedTurn
+      ? observerConfirmsTerminal
+      : idleCount >= 2;
     const nextStatus = snapshot.waitingApproval
       ? "waiting_approval"
       : snapshot.working || stillStarting

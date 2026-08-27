@@ -1,5 +1,7 @@
 # Experimental Codex Desktop Add-on
 
+Recent hardening keeps JSONL `task_complete` authoritative for observer-managed turns and accepts current approval keyboard hints. These protections do not make the renderer contract stable; repeat physical E2E checks after every Codex Desktop update. See `PATCH_05_EXPERIMENTAL_DESKTOP.md`.
+
 ## Status and disclaimer
 
 This integration is **Windows-only, experimental, unofficial, and

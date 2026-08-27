@@ -306,8 +306,8 @@ export class CodexDesktopBridge {
         element.textContent
       ].filter(Boolean).join(' ').trim().replace(/\\s+/g, ' ');
       const pattern = decision === 'approve'
-        ? /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)$/i
-        : /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)$/i;
+        ? /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)(?:\s*(?:enter|return|⏎|↵))?$/i
+        : /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)(?:\s*(?:esc|escape))?$/i;
       const candidates = [...document.querySelectorAll('button, [role="button"]')]
         .filter(visible)
         .filter((element) => pattern.test(label(element)));
@@ -1161,10 +1161,10 @@ function buildSnapshotExpression() {
     ].filter(Boolean).join(' ').trim().replace(/\\s+/g, ' ').toLowerCase();
     const approvalLabels = visibleControls.map(controlLabel);
     const hasAllow = approvalLabels.some((label) =>
-      /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)$/i.test(label)
+      /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)(?:\s*(?:enter|return|⏎|↵))?$/i.test(label)
     );
     const hasDeny = approvalLabels.some((label) =>
-      /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)$/i.test(label)
+      /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)(?:\s*(?:esc|escape))?$/i.test(label)
     );
     const registryHasApproval = Boolean(commandState.approve && commandState.decline);
     const commandApproval = registryHasApproval;
