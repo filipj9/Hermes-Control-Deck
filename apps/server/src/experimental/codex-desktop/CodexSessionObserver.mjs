@@ -114,17 +114,35 @@ export class CodexSessionObserver {
 
     const payload = event?.payload || {};
     const payloadType = payload.type || "";
-    if (event?.type === "turn_context" && payload.turn_id) {
+    const startsNewTurn = Boolean(
+      (event?.type === "turn_context" && payload.turn_id)
+      || (event?.type === "event_msg" && payloadType === "task_started" && payload.turn_id)
+      || (event?.type === "event_msg" && payloadType === "user_message")
+    );
+    if (this.snapshotValue.terminalStatus && !startsNewTurn) {
+      if (event?.timestamp) this.snapshotValue.updatedAt = event.timestamp;
+      return;
+    }
+    let activityChanged = false;
+    if ((event?.type === "turn_context" || (event?.type === "event_msg" && payloadType === "task_started")) && payload.turn_id) {
+      if (this.snapshotValue.turnId !== String(payload.turn_id)) {
+        this.snapshotValue.assistantText = undefined;
+        this.snapshotValue.tokens = 0;
+      }
       this.resetApprovalState();
       this.snapshotValue.turnId = String(payload.turn_id);
+      this.snapshotValue.terminalStatus = undefined;
       this.snapshotValue.hasTurnState = true;
       this.snapshotValue.working = true;
       this.snapshotValue.waitingApproval = false;
       this.snapshotValue.detail = "Turn started";
+      activityChanged = true;
     }
 
     if (event?.type === "event_msg" && payloadType === "user_message") {
       this.resetApprovalState();
+      this.snapshotValue.terminalStatus = undefined;
+      this.snapshotValue.assistantText = undefined;
       this.snapshotValue.hasTurnState = true;
       this.snapshotValue.working = true;
       this.snapshotValue.waitingApproval = false;
@@ -132,14 +150,34 @@ export class CodexSessionObserver {
         payload.message || payload.text || payload.content || this.snapshotValue.title
       );
       this.snapshotValue.detail = "Prompt received";
+      activityChanged = true;
     }
 
     if (event?.type === "event_msg" && payloadType === "task_complete") {
       this.snapshotValue.hasTurnState = true;
       if (!this.snapshotValue.turnId || !payload.turn_id || String(payload.turn_id) === this.snapshotValue.turnId) {
         this.snapshotValue.working = false;
+        this.snapshotValue.terminalStatus = payload.error ? "failed" : "completed";
         this.resetApprovalState();
-        this.snapshotValue.detail = "Task complete";
+        this.snapshotValue.detail = payload.error
+          ? compactText(payload.error.message || payload.error) || "Task failed"
+          : "Task complete";
+        const finalMessage = contentText(payload.last_agent_message);
+        if (Object.hasOwn(payload, "last_agent_message") || payload.error) {
+          this.snapshotValue.assistantText = finalMessage || undefined;
+        }
+        activityChanged = true;
+      }
+    }
+
+    if (event?.type === "event_msg" && payloadType === "turn_aborted") {
+      this.snapshotValue.hasTurnState = true;
+      if (!this.snapshotValue.turnId || !payload.turn_id || String(payload.turn_id) === this.snapshotValue.turnId) {
+        this.snapshotValue.working = false;
+        this.snapshotValue.terminalStatus = "cancelled";
+        this.resetApprovalState();
+        this.snapshotValue.detail = "Turn aborted";
+        activityChanged = true;
       }
     }
 
@@ -150,15 +188,17 @@ export class CodexSessionObserver {
       this.snapshotValue.waitingApproval = true;
       this.snapshotValue.detail = "Waiting for approval";
       this.snapshotValue.approvalDetection = "session-jsonl/explicit-approval-event";
+      activityChanged = true;
     }
 
     if (/approval.*(?:resolved|completed|decision)|(?:resolved|completed|decision).*approval/i.test(payloadType)) {
       this.explicitApprovalPending = false;
       this.refreshApprovalSnapshot();
+      activityChanged = true;
     }
 
     if (event?.type === "response_item" && ["function_call", "custom_tool_call"].includes(payloadType)) {
-      if (isEscalatedToolCall(payload)) {
+      if (isApprovalToolCall(payload)) {
         const callId = approvalCallId(payload);
         this.pendingApprovalCallIds.add(callId);
         this.snapshotValue.hasTurnState = true;
@@ -167,6 +207,7 @@ export class CodexSessionObserver {
         this.snapshotValue.detail = "Waiting for approval";
         this.snapshotValue.approvalDetection = "session-jsonl/escalated-tool-call";
         this.snapshotValue.approvalCallId = callId;
+        activityChanged = true;
       }
     }
 
@@ -174,17 +215,29 @@ export class CodexSessionObserver {
       const callId = approvalCallId(payload);
       if (callId) this.pendingApprovalCallIds.delete(callId);
       this.refreshApprovalSnapshot();
+      activityChanged = true;
     }
 
     if (event?.type === "event_msg" && payloadType === "token_count") {
       const usage = payload.info?.last_token_usage;
       if (usage && Number.isFinite(Number(usage.total_tokens))) {
-        this.snapshotValue.tokens = Number(usage.total_tokens);
+        const tokens = Number(usage.total_tokens);
+        activityChanged = activityChanged || tokens !== this.snapshotValue.tokens;
+        this.snapshotValue.tokens = tokens;
       }
     }
 
+    const assistantText = assistantMessageText(event, payloadType);
+    if (assistantText) {
+      this.snapshotValue.assistantText = assistantText;
+      activityChanged = true;
+    }
     const detail = eventDetail(event, payloadType);
-    if (detail && !this.snapshotValue.waitingApproval) this.snapshotValue.detail = detail;
+    if (detail && !this.snapshotValue.waitingApproval) {
+      this.snapshotValue.detail = detail;
+      activityChanged = true;
+    }
+    if (activityChanged) this.snapshotValue.activitySequence += 1;
     if (event?.timestamp) this.snapshotValue.updatedAt = event.timestamp;
   }
 
@@ -268,11 +321,14 @@ export class CodexSessionObserver {
   }
 }
 
-function isEscalatedToolCall(payload = {}) {
+function isApprovalToolCall(payload = {}) {
   const rawInput = payload.input ?? payload.arguments ?? "";
   const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput);
-  return /["']sandbox_permissions["']\s*:\s*["']require_escalated["']/.test(input)
+  const escalatedCommand = /["']sandbox_permissions["']\s*:\s*["']require_escalated["']/.test(input)
     && /["']justification["']\s*:/.test(input);
+  const permissionRequest = /\btools\.request_permissions\s*\(/.test(input)
+    && /\bpermissions\s*:/.test(input);
+  return escalatedCommand || permissionRequest;
 }
 
 function approvalCallId(payload = {}) {
@@ -336,7 +392,10 @@ function ingestApprovalLine(state, line) {
     state.title = compactText(payload.message || payload.text || payload.content || state.title);
     state.pending.clear();
   }
-  if (event?.type === "event_msg" && payloadType === "task_complete") state.pending.clear();
+  if (
+    event?.type === "event_msg"
+    && ["task_complete", "turn_aborted"].includes(payloadType)
+  ) state.pending.clear();
 
   if (/approval.*request|request.*approval/i.test(payloadType)) {
     const callId = approvalCallId(payload) || `explicit:${state.turnId || "active"}`;
@@ -352,7 +411,7 @@ function ingestApprovalLine(state, line) {
   if (/approval.*(?:resolved|completed|decision)|(?:resolved|completed|decision).*approval/i.test(payloadType)) {
     state.pending.clear();
   }
-  if (event?.type === "response_item" && ["function_call", "custom_tool_call"].includes(payloadType) && isEscalatedToolCall(payload)) {
+  if (event?.type === "response_item" && ["function_call", "custom_tool_call"].includes(payloadType) && isApprovalToolCall(payload)) {
     const callId = approvalCallId(payload);
     if (callId) {
       state.pending.set(callId, {
@@ -409,6 +468,30 @@ function eventDetail(event, payloadType) {
   return "";
 }
 
+function assistantMessageText(event, payloadType) {
+  if (event?.type === "event_msg" && payloadType === "agent_message") {
+    return contentText(event.payload?.message);
+  }
+  if (event?.type === "response_item" && payloadType === "message" && event.payload?.role === "assistant") {
+    return contentText(event.payload?.content);
+  }
+  return "";
+}
+
+function contentText(value) {
+  if (Array.isArray(value)) {
+    value = value.map((item) => {
+      if (typeof item === "string") return item;
+      return item?.text || item?.content || item?.message || "";
+    }).join("");
+  }
+  if (value && typeof value === "object") {
+    value = value.text || value.content || value.message || "";
+  }
+  const text = String(value || "").trim();
+  return text ? text.slice(0, 8000) : "";
+}
+
 function payloadName(payload = {}) {
   return payload.name || payload.tool_name || payload.toolName || payload.command;
 }
@@ -431,11 +514,14 @@ function emptySnapshot() {
     title: "Codex Desktop task",
     hasTurnState: false,
     working: false,
+    terminalStatus: undefined,
     waitingApproval: false,
     approvalDetection: undefined,
     approvalCallId: undefined,
     pendingApprovals: [],
     detail: "Idle",
+    activitySequence: 0,
+    assistantText: "",
     tokens: undefined,
     updatedAt: new Date(0).toISOString()
   };
