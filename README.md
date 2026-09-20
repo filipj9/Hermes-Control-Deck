@@ -75,7 +75,7 @@ This repository is an alpha release candidate: **v0.1.0-alpha**.
 
 The current public tree has been checked with:
 
-- 81 automated tests passing in the isolated release staging tree;
+- the complete automated test suite passing in the isolated release staging tree;
 - JavaScript syntax checks passing for the application check list;
 - local API smoke checks for health, runtimes, agents, tasks, sessions,
   approvals, and events;
@@ -312,9 +312,11 @@ is in [.env.example](.env.example). The most important values are:
 | `CONTROL_SERVER_PORT` | Control server port, default `4240` |
 | `CONTROL_AUTH_TOKEN` | Required local control token, minimum 32 characters |
 | `CONTROL_ALLOWED_ORIGINS` | Explicit comma-separated browser origins |
+| `CONTROL_TRUSTED_HOSTS` | Explicit custom hostnames accepted behind a user-managed proxy |
 | `HERMES_BASE_URL` | External Hermes WebUI base URL |
 | `HERMES_PASSWORD` | Hermes WebUI password, kept in process memory |
 | `HERMES_API_PREFIX` | Hermes API prefix, default `/api` |
+| `HERMES_CHAT_START_TIMEOUT_MS` | Identity window for a slow Hermes chat start, default 30000 ms |
 | `HERMES_WS_ENABLED` | Enables the optional Hermes Gateway WebSocket transport |
 | `HERMES_TUI_RELAY_ENABLED` | Enables the optional shared TUI relay |
 | `HERMES_BRIDGE_ENABLED` | Enables the optional approval-event receiver |
@@ -438,6 +440,7 @@ See [SECURITY.md](SECURITY.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - [docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md) - clean-machine test plan;
 - [docs/PATCH_04_WEB_PUSH.md](docs/PATCH_04_WEB_PUSH.md) - secure opt-in Web Push setup and verification;
 - [docs/STABILITY_OUTPUT_PUSH_PATCH_SERIES.md](docs/STABILITY_OUTPUT_PUSH_PATCH_SERIES.md) - ordered installation, verification and rollback guide for the stability update;
+- [docs/CODEX_UPDATE_HARDENING.md](docs/CODEX_UPDATE_HARDENING.md) - current Codex update, security and experimental Desktop hardening;
 - [docs/HERMES_GATEWAY_TUI.md](docs/HERMES_GATEWAY_TUI.md) - optional Gateway/TUI and approval bridge;
 - [docs/UPSTREAM_LICENSE_AUDIT.md](docs/UPSTREAM_LICENSE_AUDIT.md) - upstream audit.
 

@@ -8,6 +8,7 @@ Configuration is read from `.env` and process environment. Never commit `.env`.
 | `CONTROL_SERVER_PORT` | no | default `4240` |
 | `CONTROL_AUTH_TOKEN` | yes | random admin token, minimum 32 characters |
 | `CONTROL_ALLOWED_ORIGINS` | no | comma-separated explicit origins |
+| `CONTROL_TRUSTED_HOSTS` | no | comma-separated custom hostnames; localhost and IP literals work without it |
 | `CONTROL_WEB_PUSH_ENABLED` | no | enables opt-in PWA completion notifications; default false |
 | `CONTROL_WEB_PUSH_PUBLIC_KEY` | with Web Push | VAPID public key exposed to the authenticated PWA |
 | `CONTROL_WEB_PUSH_PRIVATE_KEY` | with Web Push | private VAPID key; server-only and never committed |
@@ -18,6 +19,7 @@ Configuration is read from `.env` and process environment. Never commit `.env`.
 | `HERMES_BASE_URL` | yes when enabled | user-owned Hermes WebUI URL |
 | `HERMES_PASSWORD` | yes for password auth | kept in process memory only |
 | `HERMES_API_PREFIX` | no | default `/api` |
+| `HERMES_CHAT_START_TIMEOUT_MS` | no | slow chat-start identity window; default 30000 ms |
 | `HERMES_WS_ENABLED` | no | enables optional Hermes Gateway WebSocket transport |
 | `HERMES_WS_URL` | when WS enabled | Gateway WebSocket endpoint |
 | `HERMES_WS_SESSION_ID` | recommended for TUI | existing session to resume |
@@ -36,9 +38,14 @@ Configuration is read from `.env` and process environment. Never commit `.env`.
 | `CODEX_RUN_TIMEOUT_MS` | no | run deadline |
 | `CODEX_STOP_TIMEOUT_MS` | no | stop/cleanup deadline |
 | `CODEX_ALLOW_CONCURRENT_RUNS` | no | default false |
+| `CODEX_EXPERIMENTAL_DESKTOP_ENABLED` | no | enables the unsupported Windows Desktop add-on; default false |
+| `CODEX_EXPERIMENTAL_DESKTOP_CDP_HOST` | with Desktop add-on | loopback host only; default `127.0.0.1` |
+| `CODEX_EXPERIMENTAL_DESKTOP_CDP_PORT` | with Desktop add-on | user-managed loopback CDP port; default `4248` |
 
-The public adapter always uses the CLI surface. Desktop/CDP settings are not
-valid configuration in this repository.
+The public adapter uses the CLI surface by default. The optional Desktop/CDP
+settings apply only to the quarantined Windows experiment documented in
+`docs/EXPERIMENTAL_CODEX_DESKTOP.md`; enabling it does not make Desktop a
+supported public runtime.
 
 All Gateway/TUI and approval bridge settings default to disabled. Do not reuse
 `CONTROL_AUTH_TOKEN`, the Hermes WebUI password, or either bridge token for a

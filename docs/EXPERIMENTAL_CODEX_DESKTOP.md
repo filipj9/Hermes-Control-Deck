@@ -1,6 +1,11 @@
 # Experimental Codex Desktop Add-on
 
-Recent hardening keeps JSONL `task_complete` authoritative for observer-managed turns and accepts current approval keyboard hints. These protections do not make the renderer contract stable; repeat physical E2E checks after every Codex Desktop update. See `PATCH_05_EXPERIMENTAL_DESKTOP.md`.
+Recent hardening keeps terminal JSONL state authoritative, binds RUN and
+reasoning to the explicitly selected session, validates the current reasoning
+slider and model, and rejects ambiguous Micro keycaps or command runners. These
+protections do not make the renderer contract stable; repeat physical E2E
+checks after every Codex Desktop update. See
+`CODEX_UPDATE_HARDENING.md` and `PATCH_05_EXPERIMENTAL_DESKTOP.md`.
 
 ## Status and disclaimer
 
@@ -147,6 +152,12 @@ add-on can observe the visible task state, list visible sessions, submit a
 prompt, stop the visible run, resolve the visible approval, and adjust reasoning
 effort. All operations are best-effort and verify observable state before
 reporting success.
+
+The agent lane displays the observed model and reasoning as read-only text. It
+does not provide a model-selection action. RUN and targeted PROMPT wait for the
+selected conversation and one unambiguous visible composer before emitting a
+Micro HID action. The reasoning control likewise waits for two stable reads of
+the selected conversation before changing its slider or menu value.
 
 ## Failure and recovery
 
