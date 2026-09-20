@@ -17,10 +17,52 @@ const ACTION_KEYS = {
   send: "ACT12"
 };
 
-const REASONING_KEYS = {
-  decrease: "ENC_CW",
-  increase: "ENC_CC"
-};
+const EFFORT_ALIASES = new Map([
+  ["lekki", "low"],
+  ["light", "low"],
+  ["low", "low"],
+  ["sredni", "medium"],
+  ["medium", "medium"],
+  ["wysoki", "high"],
+  ["high", "high"],
+  ["bardzo wysoki", "xhigh"],
+  ["very high", "xhigh"],
+  ["xhigh", "xhigh"],
+  ["maks", "max"],
+  ["max", "max"],
+  ["ultra", "ultra"]
+]);
+
+function normalizeEffortLabel(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function effortValue(label) {
+  const normalized = normalizeEffortLabel(label);
+  for (const [alias, value] of EFFORT_ALIASES) {
+    if (normalized === alias || (value === "ultra" && normalized.startsWith("ultra"))) return value;
+  }
+  return null;
+}
+
+function nextEffortIndex(currentIndex, count, direction) {
+  if (!Number.isInteger(currentIndex) || !Number.isInteger(count) || count < 2) {
+    throw new Error("Codex Desktop reasoning options are unavailable.");
+  }
+  if (currentIndex < 0 || currentIndex >= count) {
+    throw new Error("Codex Desktop reasoning selection is outside the available options.");
+  }
+  if (direction === "increase") return (currentIndex + 1) % count;
+  if (direction === "decrease") return (currentIndex - 1 + count) % count;
+  throw new Error(`Unknown Codex reasoning direction: ${direction}`);
+}
+
 
 export class CodexDesktopBridge {
   constructor(config, options = {}) {
@@ -375,112 +417,420 @@ export class CodexDesktopBridge {
     )()`);
   }
 
-  async selectAdjacentReasoning(direction, currentLevel) {
-    const levels = ["low", "medium", "high", "xhigh"];
-    const currentIndex = levels.indexOf(currentLevel);
-    if (currentIndex < 0) throw new Error("Codex Desktop reasoning level is unavailable.");
-    const delta = direction === "increase" ? 1 : -1;
-    const targetLevel = levels[Math.max(0, Math.min(levels.length - 1, currentIndex + delta))];
-    if (targetLevel === currentLevel) {
-      return { ok: true, from: currentLevel, to: targetLevel, mechanism: "limit" };
-    }
+  async readReasoningTriggerState() {
+    await this.ensureConnected();
+    return this.evaluate(`(() => {
+      const trigger = document.querySelector('[data-selected-reasoning-effort]');
+      if (!trigger) return null;
+      const visible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0
+          && style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && Number(style.opacity || 1) > 0;
+      };
+      const model = [...trigger.querySelectorAll('[class*="ModelPickerTriggerModelText"]')]
+        .find(visible)?.textContent?.trim()
+        || document.querySelector('[data-model-picker-view-toggle="true"] [class*="ViewToggleModelLabel"]')?.textContent?.trim() || '';
+      return {
+        value: trigger.getAttribute('data-selected-reasoning-effort'),
+        model
+      };
+    })()`);
+  }
 
+  async waitForReasoningThread(threadKey) {
+    const expectedThreadKey = String(threadKey || "").replace(/^local:/, "");
+    if (!expectedThreadKey) throw new Error("Codex Desktop reasoning session id is required.");
+    let stableMatches = 0;
+    return this.waitForReasoningUi(
+      async () => {
+        let state;
+        try {
+          state = await this.evaluate(`(() => {
+            const expected = ${JSON.stringify(expectedThreadKey)};
+            const normalize = (value) => String(value ?? '').replace(/^local:/, '');
+            const active = normalize(
+              document.querySelector('[data-above-composer-conversation-id]')
+                ?.getAttribute('data-above-composer-conversation-id')
+            );
+            const trigger = document.querySelector('[data-selected-reasoning-effort]');
+            if (active !== expected || !trigger) return null;
+            const rect = trigger.getBoundingClientRect();
+            const style = getComputedStyle(trigger);
+            if (rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') {
+              return null;
+            }
+            return {
+              threadKey: active,
+              value: trigger.getAttribute('data-selected-reasoning-effort')
+            };
+          })()`);
+        } catch (error) {
+          if (isNavigationRace(error)) state = null;
+          else throw error;
+        }
+        stableMatches = state?.threadKey === expectedThreadKey && effortValue(state.value)
+          ? stableMatches + 1
+          : 0;
+        return state ? { ...state, stableMatches } : null;
+      },
+      (state) => state?.stableMatches >= 2,
+      { timeoutMs: 5000, description: "selected Codex Desktop reasoning controls" }
+    );
+  }
+
+  async waitForReasoningUi(read, accept, {
+    timeoutMs = 3500,
+    intervalMs = 40,
+    description = "Codex Desktop reasoning UI"
+  } = {}) {
+    const startedAt = Date.now();
+    let value;
+    while (Date.now() - startedAt <= timeoutMs) {
+      value = await read();
+      if (accept(value)) return value;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new Error(`${description} timed out after ${timeoutMs}ms.`);
+  }
+
+  async adjustReasoning(direction) {
+    try {
+      const modern = await this.evaluate(`Boolean(document.querySelector('[data-codex-intelligence-trigger="true"][data-selected-reasoning-effort]'))`);
+      if (modern) return await this.adjustReasoningSlider(direction);
+      const before = await this.openEffortSubmenu();
+      const currentIndex = before.options.findIndex((option) => option.value === before.value);
+      const targetIndex = nextEffortIndex(currentIndex, before.options.length, direction);
+      const target = before.options[targetIndex];
+      return await this.applyEffortOption(before, target);
+    } catch (error) {
+      await this.closeReasoningMenu().catch(() => {});
+      throw error;
+    }
+  }
+
+  async adjustReasoningSlider(direction) {
+    if (!["increase", "decrease"].includes(direction)) throw new Error("Invalid reasoning direction.");
+    const before = await this.readReasoningTriggerState();
     const trigger = await this.evaluate(`(() => {
+      const e = document.querySelector('[data-codex-intelligence-trigger="true"]');
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { open: e.getAttribute('data-state') === 'open', x: r.left+r.width/2, y:r.top+r.height/2 };
+    })()`);
+    if (!trigger) throw new Error("Codex reasoning trigger is unavailable.");
+    try {
+      if (!trigger.open) await this.clickPoint(trigger.x, trigger.y);
+      const readSlider = () => this.evaluate(`(() => {
+        const controls = [...document.querySelectorAll('[data-reasoning-slider="true"]')]
+          .filter(e => { const r=e.getBoundingClientRect(); return r.width>0 && r.height>0; });
+        if (controls.length !== 1) return null;
+        const slider = controls[0].querySelector('[role="slider"]');
+        const model = document.querySelector('[data-model-picker-view-toggle="true"] [class*="ViewToggleModelLabel"]')?.textContent?.trim();
+        if (!slider || !model) return null;
+        return { min:Number(slider.getAttribute('aria-valuemin')), max:Number(slider.getAttribute('aria-valuemax')),
+          current:Number(slider.getAttribute('aria-valuenow')), model,
+          value:document.querySelector('[data-selected-reasoning-effort]')?.getAttribute('data-selected-reasoning-effort') };
+      })()`);
+      const initial = await this.waitForReasoningUi(readSlider, Boolean, { description:"Codex reasoning slider" });
+      if (![initial.min, initial.max, initial.current].every(Number.isInteger)
+        || initial.max <= initial.min || initial.current < initial.min || initial.current > initial.max) {
+        throw new Error("Codex reasoning slider bounds are invalid.");
+      }
+      if (before.model && initial.model !== before.model) throw new Error("Codex model changed while opening reasoning.");
+      const count = initial.max-initial.min+1;
+      const next = initial.min + nextEffortIndex(initial.current-initial.min,count,direction);
+      const delta = next-initial.current;
+      const focused = await this.evaluate(`(() => {
+        const e=document.querySelector('[data-reasoning-slider="true"]');
+        if (!e || e.getAttribute('aria-disabled') === 'true') return false;
+        e.focus(); return document.activeElement === e;
+      })()`);
+      if (!focused) throw new Error("Codex reasoning slider cannot receive keyboard input.");
+      for (let i=0;i<Math.abs(delta);i++) await this.pressKey(delta>0 ? "ArrowRight" : "ArrowLeft");
+      const after = await this.waitForReasoningUi(readSlider,
+        value=>value?.current===next && value?.model===initial.model && value?.value && value.value!==initial.value,
+        {description:"Codex reasoning slider change"});
+      return {ok:true,from:initial.value,to:after.value,model:after.model,mechanism:"reasoning-effort-slider"};
+    } finally {
+      await this.closeReasoningMenu().catch(()=>{});
+    }
+  }
+
+  async readReasoningSelection() {
+    try {
+      const state = await this.openEffortSubmenu();
+      return {
+        label: state.label,
+        value: state.value,
+        model: state.model,
+        options: state.options.map(({ label, value }) => ({ label, value }))
+      };
+    } finally {
+      await this.closeReasoningMenu().catch(() => {});
+    }
+  }
+
+  async selectReasoningLabel(targetLabel) {
+    const before = await this.openEffortSubmenu();
+    try {
+      const targetValue = effortValue(targetLabel);
+      const target = before.options.find((option) =>
+        option.value === targetValue || normalizeEffortLabel(option.label) === normalizeEffortLabel(targetLabel)
+      );
+      if (!target) throw new Error(`Codex Desktop reasoning option is unavailable: ${targetLabel}`);
+      if (target.value === before.value) {
+        await this.closeReasoningMenu();
+        return { ok: true, from: before.value, to: before.value, label: before.label, model: before.model };
+      }
+      return await this.applyEffortOption(before, target);
+    } catch (error) {
+      await this.closeReasoningMenu().catch(() => {});
+      throw error;
+    }
+  }
+
+  async applyEffortOption(before, target) {
+    let clicked;
+    try {
+      clicked = await this.evaluate(`(() => {
+      const target = ${JSON.stringify(target.value)};
+      const normalize = (value) => String(value ?? '')
+        .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\./g, '')
+        .replace(/\\s+/g, ' ').trim().toLowerCase();
+      const valueOf = (label) => {
+        const value = normalize(label);
+        if (/^(lekki|light|low)$/.test(value)) return 'low';
+        if (/^(sredni|medium)$/.test(value)) return 'medium';
+        if (/^(wysoki|high)$/.test(value)) return 'high';
+        if (/^(bardzo wysoki|very high|xhigh)$/.test(value)) return 'xhigh';
+        if (/^(maks|max)$/.test(value)) return 'max';
+        if (value.startsWith('ultra')) return 'ultra';
+        return null;
+      };
+      const option = [...document.querySelectorAll('[role="menuitem"]')]
+        .find((element) => valueOf(element.textContent) === target);
+      if (!option) return false;
+      option.click();
+      return true;
+      })()`);
+    } catch (error) {
+      if (!isNavigationRace(error)) throw error;
+      clicked = true;
+    }
+    if (!clicked) {
+      throw new Error(`Codex Desktop reasoning option could not be clicked: ${target.value}.`);
+    }
+    const after = await this.waitForReasoningUi(
+      () => this.readReasoningTriggerState(),
+      (value) => value?.value === target.value && value?.model === before.model,
+      { description: `Codex Desktop reasoning selection ${target.value}` }
+    );
+    await this.closeReasoningMenu().catch(() => {});
+    return {
+      ok: true,
+      from: before.value,
+      to: after.value,
+      fromLabel: before.label,
+      toLabel: target.label,
+      model: after.model,
+      mechanism: "reasoning-effort-menu"
+    };
+  }
+
+  async openEffortSubmenu() {
+    const readTrigger = () => this.evaluate(`(() => {
       const element = document.querySelector('[data-selected-reasoning-effort]');
       if (!element) return null;
       const rect = element.getBoundingClientRect();
       return {
+        open: element.getAttribute('data-state') === 'open',
         x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-        open: element.getAttribute('data-state') === 'open'
+        y: rect.top + rect.height / 2
       };
     })()`);
+
+    let trigger = await readTrigger();
     if (!trigger) throw new Error("Codex Desktop reasoning trigger is unavailable.");
     if (!trigger.open) {
       await this.clickPoint(trigger.x, trigger.y);
-      await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
-    const sliderFocused = await this.evaluate(`(() => {
-      const slider = document.querySelector('[data-reasoning-slider="true"]');
-      if (!slider) return false;
-      slider.focus();
-      return document.activeElement === slider;
-    })()`);
-    if (sliderFocused) {
-      await this.pressKey(direction === "increase" ? "ArrowRight" : "ArrowLeft");
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      const selected = await this.readReasoningLevel();
-      if (selected && selected !== currentLevel) {
-        return { ok: true, from: currentLevel, to: selected, mechanism: "reasoning-slider" };
-      }
-    }
-
-    const effortMenu = await this.evaluate(`(() => {
-      const item = [...document.querySelectorAll('[role="menuitem"]')].find((element) => {
-        const label = [
-          element.getAttribute('aria-label'),
-          element.textContent
-        ].filter(Boolean).join(' ').trim();
-        return /(?:nakład pracy|naklad pracy|reasoning effort|effort)/i.test(label);
-      });
-      if (!item) return null;
-      const rect = item.getBoundingClientRect();
-      return {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-        open: item.getAttribute('data-state') === 'open'
-      };
-    })()`);
-    if (!effortMenu) throw new Error("Codex Desktop reasoning effort menu is unavailable.");
-    if (!effortMenu.open) {
-      await this.movePoint(effortMenu.x, effortMenu.y);
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    }
-
-    const option = await this.evaluate(`(() => {
-      const target = ${JSON.stringify(targetLevel)};
-      const items = [...document.querySelectorAll(
-        '[role="menuitemradio"], [role="menuitem"], [role="option"], [data-radix-collection-item]'
-      )].filter((element) => {
+    const readMainMenu = () => this.evaluate(`(() => {
+      const visible = (element) => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      });
-      const labels = {
-        low: /^(low|niski)$/i,
-        medium: /^(medium|med|średni|sredni)$/i,
-        high: /^(high|wysoki)$/i,
-        xhigh: /^(very high|extra high|xhigh|bardzo wysoki)$/i
       };
-      const candidate = items.find((element) => {
-        const attributes = [
-          element.getAttribute('data-value'),
-          element.getAttribute('value'),
-          element.getAttribute('data-reasoning-effort')
-        ].filter(Boolean).join(' ').toLowerCase();
-        const text = (element.textContent ?? '').trim().replace(/\\s+/g, ' ');
-        return attributes.split(/\\s+/).includes(target) || labels[target].test(text);
-      });
-      if (!candidate) {
-        return {
-          reason: 'reasoning-option-not-found',
-          options: items.map((element) => (element.textContent ?? '').trim()).filter(Boolean).slice(0, 20)
+      const items = [...document.querySelectorAll('[role="menuitem"]')].filter(visible);
+      const effort = items.find((element) => /^(nak.ad pracy|reasoning effort|effort)/i.test(
+        [element.getAttribute('aria-label'), element.textContent].filter(Boolean).join(' ').trim()
+      ));
+      const model = items.find((element) => /^model\\s+/i.test(element.getAttribute('aria-label') ?? ''));
+      if (!effort) return null;
+      const rect = effort.getBoundingClientRect();
+      const aria = effort.getAttribute('aria-label') ?? '';
+      return {
+        label: aria.replace(/^(Nak.ad pracy|Reasoning effort|Effort)\s*/i, '').trim(),
+        model: (model?.getAttribute('aria-label') ?? '').replace(/^Model\\s*/i, '').trim(),
+        open: effort.getAttribute('data-state') === 'open',
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2
+      };
+    })()`);
+
+    let menu;
+    try {
+      menu = await this.waitForReasoningUi(
+        readMainMenu,
+        Boolean,
+        { description: "Codex Desktop reasoning menu" }
+      );
+    } catch (initialMenuError) {
+      trigger = await readTrigger();
+      if (!trigger) throw initialMenuError;
+      if (!trigger.open) await this.clickPoint(trigger.x, trigger.y);
+      menu = await this.waitForReasoningUi(
+        readMainMenu,
+        Boolean,
+        { timeoutMs: 6500, description: "Codex Desktop reasoning menu retry" }
+      );
+    }
+    if (!menu.open) {
+      const clicked = await this.evaluate(`(() => {
+        const visible = (element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0
+            && style.display !== 'none'
+            && style.visibility !== 'hidden';
         };
-      }
-      const rect = candidate.getBoundingClientRect();
+        const effort = [...document.querySelectorAll('[role="menuitem"]')]
+          .filter(visible)
+          .find((element) => /^(nak.ad pracy|reasoning effort|effort)/i.test(
+            [element.getAttribute('aria-label'), element.textContent].filter(Boolean).join(' ').trim()
+          ));
+        if (!effort) return false;
+        effort.click();
+        return true;
+      })()`);
+      if (!clicked) throw new Error("Codex Desktop reasoning effort item is unavailable.");
+      menu = await this.waitForReasoningUi(
+        readMainMenu,
+        (value) => Boolean(value?.open),
+        { description: "Codex Desktop reasoning effort submenu" }
+      );
+    }
+    if (!menu?.open) throw new Error("Codex Desktop reasoning effort submenu did not open.");
+
+    const readOptions = () => this.evaluate(`(() => {
+      const normalize = (value) => String(value ?? '')
+        .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\./g, '')
+        .replace(/\\s+/g, ' ').trim().toLowerCase();
+      const valueOf = (label) => {
+        const value = normalize(label);
+        if (/^(lekki|light|low)$/.test(value)) return 'low';
+        if (/^(sredni|medium)$/.test(value)) return 'medium';
+        if (/^(wysoki|high)$/.test(value)) return 'high';
+        if (/^(bardzo wysoki|very high|xhigh)$/.test(value)) return 'xhigh';
+        if (/^(maks|max)$/.test(value)) return 'max';
+        if (value.startsWith('ultra')) return 'ultra';
+        return null;
+      };
+      const visible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      return [...document.querySelectorAll('[role="menuitem"]')]
+        .filter(visible)
+        .map((element) => {
+          const label = (element.textContent ?? '').trim().replace(/\\s+/g, ' ');
+          const value = valueOf(label);
+          const rect = element.getBoundingClientRect();
+          return value ? { label, value, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+        })
+        .filter(Boolean);
+    })()`);
+
+    const currentValue = effortValue(menu.label);
+    const options = await this.waitForReasoningUi(
+      readOptions,
+      (value) => {
+        if (!Array.isArray(value) || value.length < 2 || !currentValue) return false;
+        const values = value.map((option) => option.value);
+        return new Set(values).size === values.length && values.includes(currentValue);
+      },
+      { description: "Codex Desktop reasoning effort options" }
+    );
+
+    const values = options.map((option) => option.value);
+    const uniqueValues = new Set(values);
+    if (options.length < 2 || uniqueValues.size !== options.length) {
+      throw new Error("Codex Desktop reasoning effort options are incomplete or ambiguous.");
+    }
+    const value = currentValue;
+    if (!value || !uniqueValues.has(value)) {
+      throw new Error(`Codex Desktop current reasoning option is unavailable: ${menu.label || "unknown"}.`);
+    }
+    if (!menu.model) throw new Error("Codex Desktop selected model is unavailable.");
+
+    return { label: menu.label, value, model: menu.model, options };
+  }
+
+  async closeReasoningMenu() {
+    const readClose = () => this.evaluate(`(() => {
+      const element = document.querySelector('[data-selected-reasoning-effort]');
+      if (!element || element.getAttribute('data-state') !== 'open') return null;
+      const rect = element.getBoundingClientRect();
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     })()`);
-    if (!option?.x || !option?.y) {
-      throw new Error(`Codex Desktop reasoning change failed: ${option?.reason || "option-not-found"}.`);
+    const close = await readClose();
+    if (close) {
+      const isClosed = () => this.evaluate(`(() =>
+        document.querySelector('[data-selected-reasoning-effort]')
+          ?.getAttribute('data-state') !== 'open'
+      )()`);
+      await this.evaluate(`(() => {
+        const event = new KeyboardEvent('keydown', {
+          key: 'Escape',
+          code: 'Escape',
+          keyCode: 27,
+          which: 27,
+          bubbles: true,
+          cancelable: true,
+          composed: true
+        });
+        (document.activeElement ?? document.body).dispatchEvent(event);
+        return true;
+      })()`);
+      try {
+        await this.waitForReasoningUi(isClosed, Boolean, {
+          timeoutMs: 900,
+          description: "Codex Desktop reasoning menu synthetic Escape close"
+        });
+      } catch (syntheticCloseError) {
+        const retry = await readClose();
+        if (!retry) return;
+        await this.pressKey("Escape");
+        try {
+          await this.waitForReasoningUi(isClosed, Boolean, {
+            timeoutMs: 2000,
+            description: "Codex Desktop reasoning menu native Escape close"
+          });
+        } catch (nativeCloseError) {
+          const fallback = await readClose();
+          if (!fallback) return;
+          await this.clickPoint(fallback.x, fallback.y);
+          await this.waitForReasoningUi(isClosed, Boolean, {
+            timeoutMs: 3500,
+            description: "Codex Desktop reasoning menu trigger close"
+          });
+        }
+      }
     }
-    await this.clickPoint(option.x, option.y);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const selected = await this.readReasoningLevel();
-    if (selected !== targetLevel) {
-      throw new Error("Codex Desktop reasoning change failed: selection-not-applied.");
-    }
-    return { ok: true, from: currentLevel, to: targetLevel, mechanism: "menu" };
   }
 
   async clickPoint(x, y) {
@@ -1149,11 +1499,12 @@ function buildSnapshotExpression() {
       conversations.find((item) => item.threadKey === activeThreadKey)?.title
       ?? (activeElement?.getAttribute('aria-label') ?? activeElement?.textContent ?? '').trim().slice(0, 240)
       ?? undefined;
-    const visibleControls = [...document.querySelectorAll('button, [role="button"]')].filter((element) => {
+    const isVisible = (element) => {
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-      });
+    };
+    const visibleControls = [...document.querySelectorAll('button, [role="button"]')].filter(isVisible);
     const controlLabel = (element) => [
       element.getAttribute('aria-label'),
       element.getAttribute('title'),
@@ -1173,6 +1524,10 @@ function buildSnapshotExpression() {
       const label = controlLabel(element);
       return /(^|\\s)(stop|interrupt|cancel generation|stop generating|zatrzymaj|przerwij|anuluj)(\\s|$)/i.test(label);
     });
+    const reasoningTrigger = document.querySelector('[data-selected-reasoning-effort]');
+    const reasoning = reasoningTrigger?.getAttribute('data-selected-reasoning-effort') ?? undefined;
+    const model = [...(reasoningTrigger?.querySelectorAll('[class*="ModelPickerTriggerModelText"]') ?? [])]
+      .find(isVisible)?.textContent?.trim() ?? undefined;
     return {
       activeThreadKey,
       activeSidebarThreadKey,
@@ -1180,6 +1535,8 @@ function buildSnapshotExpression() {
       conversations,
       working,
       waitingApproval,
+      reasoning,
+      model,
       approvalDetection: commandApproval ? 'command-registry' : waitingApproval ? 'visible-controls' : undefined,
       approvalHintAt: commandApproval ? commandState.approvalChangedAt : undefined,
       observedAt: Date.now()

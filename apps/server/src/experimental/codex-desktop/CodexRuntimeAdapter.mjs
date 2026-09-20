@@ -92,6 +92,8 @@ export class CodexRuntimeAdapter {
               hiddenAppServerConnected: appServerConnected,
               appServer: this.appServer?.describe() || { available: false },
               nativeBridge: this.desktopBridge?.describe() || { available: false },
+              reasoning: this.desktopBridge?.lastSnapshot?.reasoning,
+              model: this.desktopBridge?.lastSnapshot?.model,
               observer: this.sessionObserver?.describe() || { available: false },
               observed
             }
@@ -751,6 +753,12 @@ export class CodexRuntimeAdapter {
       });
     }
     if (action === "reasoning-up" || action === "reasoning-down") {
+      const requestedThreadKey = stripDesktopConversationId(payload.conversationId);
+      if (!requestedThreadKey) {
+        throw new Error("Select a Codex Desktop session before changing reasoning.");
+      }
+      await this.desktopBridge.activateThread(requestedThreadKey);
+      await this.desktopBridge.waitForReasoningThread(requestedThreadKey);
       const direction = action === "reasoning-up" ? "increase" : "decrease";
       return this.desktopBridge.adjustReasoning(direction);
     }

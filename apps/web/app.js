@@ -972,6 +972,7 @@ async function refreshRuntimes(options = {}) {
       || "cli"
     ).toLowerCase();
     state.codexSurfaceMode = codexSurface === "desktop" ? "desktop" : "cli";
+    syncCodexReasoningFromRuntimes();
     persistCache("runtimes", state.runtimes);
     renderRuntimes(data.errors || []);
     return data;
@@ -1254,6 +1255,11 @@ function shouldResumeCurrent(source, action) {
 }
 
 function selectedConversationIdFor(source) {
+  if (source === "codex"
+    && state.codexSurfaceMode === "desktop"
+    && String(state.selectedConversationId || "").startsWith("codex:desktop:")) {
+    return state.selectedConversationId;
+  }
   const selected = state.conversations.find((conversation) =>
     conversation.id === state.selectedConversationId && conversation.source === source
   );
@@ -2299,6 +2305,7 @@ async function cycleReasoning(button) {
         action: "reasoning-up",
         payload: {
           surface: "desktop",
+          conversationId: selectedConversationIdFor("codex"),
           current: previousLevel,
           target: fallbackLevel
         }
@@ -2321,6 +2328,22 @@ async function cycleReasoning(button) {
   refreshReasoningButton(button);
   renderAgentKeys();
   addLocalEvent(state.activeRuntime, "ui.reasoning.changed", `Reasoning ${state.reasoningLevel.toUpperCase()}.`);
+  return true;
+}
+
+function syncCodexReasoningFromRuntimes() {
+  const codex = state.runtimes.find((runtime) => runtime.source === "codex");
+  const details = state.codexSurfaceMode === "desktop"
+    ? codex?.details?.surfaces?.desktop || codex?.details
+    : codex?.details?.surfaces?.cli || codex?.details;
+  const next = normalizeUiReasoning(details?.reasoning);
+  if (!next || next === state.reasoningLevel) return false;
+  state.reasoningLevel = next;
+  try {
+    window.localStorage.setItem("hermes_control_reasoning_v1", next);
+  } catch {
+    // Optional local preference.
+  }
   return true;
 }
 
