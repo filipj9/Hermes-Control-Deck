@@ -25,6 +25,7 @@ export function loadConfig(projectRoot) {
       cacheTtlMs: numberFrom(env.CONTROL_CACHE_TTL_MS, 1200),
       authToken: env.CONTROL_AUTH_TOKEN || "",
       allowedOrigins: parseList(env.CONTROL_ALLOWED_ORIGINS),
+      trustedHosts: parseList(env.CONTROL_TRUSTED_HOSTS).map((item) => item.toLowerCase()),
       maxBodyBytes: numberFrom(env.CONTROL_MAX_BODY_BYTES, 256 * 1024),
       maxPromptChars: numberFrom(env.CONTROL_MAX_PROMPT_CHARS, 100000),
       rateLimitWindowMs: numberFrom(env.CONTROL_RATE_LIMIT_WINDOW_MS, 60000),

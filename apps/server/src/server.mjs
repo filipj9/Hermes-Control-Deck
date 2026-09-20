@@ -1,4 +1,5 @@
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -11,6 +12,7 @@ import { HermesRuntimeAdapter } from "./adapters/hermes/HermesRuntimeAdapter.mjs
 import { HermesBridgeReceiver } from "./adapters/hermes/HermesBridgeReceiver.mjs";
 import { HermesTuiRelay } from "./adapters/hermes/HermesTuiRelay.mjs";
 import { createCodexAdapter } from "./adapters/codex/createCodexAdapter.mjs";
+import { sanitizePublicData } from "./domain/publicData.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
@@ -74,13 +76,17 @@ const server = http.createServer(async (request, response) => {
   try {
     setCommonHeaders(response, request);
 
+    const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+    const controlBoundary = requestUrl.pathname === "/events"
+      || requestUrl.pathname === "/healthz"
+      || requestUrl.pathname.startsWith("/api/");
+    if (controlBoundary) requireTrustedBrowserOrigin(request, config.server.trustedHosts);
+
     if (request.method === "OPTIONS") {
       response.writeHead(204);
       response.end();
       return;
     }
-
-    const requestUrl = new URL(request.url, `http://${request.headers.host}`);
 
     const protectedRequest = requestUrl.pathname === "/events"
       || requestUrl.pathname === "/healthz"
@@ -134,6 +140,7 @@ async function handleApi(request, response, requestUrl) {
   const pathname = requestUrl.pathname;
 
   if (method === "POST" && pathname === "/api/auth/session") {
+    requireJsonContentType(request);
     const body = await readJson(request);
     if (!constantTimeEquals(body.token, config.server.authToken)) {
       writeJson(response, 401, { ok: false, error: "Invalid control token" });
@@ -309,6 +316,7 @@ async function handleApi(request, response, requestUrl) {
   const hermesDecisionAckMatch = pathname.match(/^\/api\/hermes\/approval-decisions\/([^/]+)\/ack$/);
   if (method === "POST" && hermesDecisionAckMatch) {
     hermesBridge.authorize(request.headers);
+    requireJsonContentType(request);
     const body = await readJson(request, { maxBytes: config.hermes.bridge.maxBodyBytes });
     const decision = hermesBridge.ackDecision({
       decisionId: decodeURIComponent(hermesDecisionAckMatch[1]),
@@ -321,6 +329,7 @@ async function handleApi(request, response, requestUrl) {
   }
 
   if (method === "POST" && pathname === "/api/actions") {
+    requireJsonContentType(request);
     const body = await readJson(request);
     const source = body.source;
     const action = body.action;
@@ -353,6 +362,7 @@ async function handleApi(request, response, requestUrl) {
   }
 
   if (method === "POST" && pathname === "/api/tasks") {
+    requireJsonContentType(request);
     const body = await readJson(request);
     const adapter = registry.get(body.source);
     const task = await adapter.startTask(body);
@@ -362,6 +372,7 @@ async function handleApi(request, response, requestUrl) {
   }
 
   if (method === "POST" && pathname === "/api/messages") {
+    requireJsonContentType(request);
     const body = await readJson(request);
     const adapter = registry.get(body.source);
     if (body.asyncAck === true) {
@@ -435,6 +446,7 @@ async function handleApi(request, response, requestUrl) {
 
   const approvalMatch = pathname.match(/^\/api\/approvals\/([^/]+)\/decision$/);
   if (method === "POST" && approvalMatch) {
+    requireJsonContentType(request);
     const body = await readJson(request);
     const adapter = registry.get(body.source);
     const approval = await adapter.decideApproval({
@@ -599,7 +611,7 @@ async function serveStatic(urlPath, response) {
   const filePath = path.resolve(webRoot, `.${cleanPath}`);
   const relativePath = path.relative(webRoot, filePath);
 
-  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+  if (relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
     writeText(response, 403, "Forbidden");
     return;
   }
@@ -624,7 +636,7 @@ function writeFile(response, filePath) {
 
 function writeJson(response, status, data) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(data));
+  response.end(JSON.stringify(sanitizePublicData(data)));
 }
 
 function writeText(response, status, text) {
@@ -634,15 +646,60 @@ function writeText(response, status, text) {
 
 function setCommonHeaders(response, request) {
   const origin = request.headers.origin;
+  response.setHeader("Vary", "Origin");
   if (origin && config.server.allowedOrigins.includes(origin)) {
     response.setHeader("Access-Control-Allow-Origin", origin);
-    response.setHeader("Vary", "Origin");
   }
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Control-Token");
   response.setHeader("Access-Control-Allow-Credentials", "true");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
+}
+
+function requireTrustedBrowserOrigin(request, configuredHosts = []) {
+  let requestHost;
+  try {
+    requestHost = new URL(`http://${request.headers.host || ""}`).hostname;
+  } catch {
+    throw requestError("Invalid control hostname.", 403, "invalid_host");
+  }
+  if (!isTrustedControlHostname(requestHost, configuredHosts)) {
+    throw requestError("Untrusted control hostname.", 403, "untrusted_host");
+  }
+
+  const origin = String(request.headers.origin || "").trim();
+  const fetchSite = String(request.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (!origin) {
+    if (fetchSite === "cross-site") {
+      throw requestError("Cross-site control requests are not allowed.", 403, "cross_site_request");
+    }
+    return;
+  }
+
+  let originUrl;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    throw requestError("Invalid request origin.", 403, "invalid_origin");
+  }
+  if (!isTrustedControlHostname(originUrl.hostname, configuredHosts)) {
+    throw requestError("Untrusted control hostname.", 403, "untrusted_origin");
+  }
+
+  const requestHosts = [
+    request.headers.host,
+    String(request.headers["x-forwarded-host"] || "").split(",")[0].trim()
+  ].filter(Boolean).map((value) => String(value).toLowerCase());
+  if (!requestHosts.includes(originUrl.host.toLowerCase())) {
+    throw requestError("Cross-site control requests are not allowed.", 403, "cross_site_request");
+  }
+}
+
+function isTrustedControlHostname(hostname, configuredHosts) {
+  const normalized = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1" || net.isIP(normalized)) return true;
+  return configuredHosts.includes(normalized);
 }
 
 function requireSameOriginPushRequest(request) {

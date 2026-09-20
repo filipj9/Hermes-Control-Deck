@@ -1,4 +1,5 @@
 import { createEvent } from "../domain/events.mjs";
+import { sanitizePublicData } from "../domain/publicData.mjs";
 
 export class EventBus {
   constructor() {
@@ -16,7 +17,7 @@ export class EventBus {
       this.pruneHistory();
     }
 
-    const serialized = `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    const serialized = `event: ${event.type}\ndata: ${JSON.stringify(sanitizePublicData(event))}\n\n`;
     for (const client of this.clients) {
       try {
         client.write(serialized);
@@ -68,7 +69,7 @@ export class EventBus {
     this.clients.add(response);
 
     for (const event of this.list(25).reverse()) {
-      response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      response.write(`event: ${event.type}\ndata: ${JSON.stringify(sanitizePublicData(event))}\n\n`);
     }
 
     const heartbeat = setInterval(() => {
