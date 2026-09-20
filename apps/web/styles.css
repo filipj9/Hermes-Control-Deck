@@ -21,6 +21,23 @@
   font-family: "Cascadia Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+/* Compact, display-only Codex model identity. Keep the short model and
+   reasoning label readable on the narrow phone agent lane. */
+.premium-agent-name small[data-codex-model-readout="true"] {
+  overflow: visible;
+  max-width: none;
+  text-overflow: clip;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+@media (max-width: 699px) {
+  .premium-agent-name small[data-codex-model-readout="true"] {
+    font-size: 0.43rem;
+    letter-spacing: 0.035em;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

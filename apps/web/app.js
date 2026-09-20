@@ -388,9 +388,11 @@ function renderPremiumAgentConsole() {
   const lanes = ["codex", "hermes"].map((source) => {
     const signal = agentSignal(source);
     const active = source === state.activeRuntime;
-    return `<button class="premium-agent-lane ${active ? "is-active" : ""} ${signal.unread ? "has-unread" : ""}" data-agent-key="${source}" data-runtime="${source}" data-status="${escapeHtml(signal.status)}" aria-label="${source} ${active ? "selected " : ""}${escapeHtml(signal.label)}" aria-pressed="${active ? "true" : "false"}">
+    const identity = source === "codex" ? codexModelReadout() : "REMOTE";
+    const accessibleIdentity = source === "codex" ? `${surfaceModeLabel()} ${identity}` : identity;
+    return `<button class="premium-agent-lane ${active ? "is-active" : ""} ${signal.unread ? "has-unread" : ""}" data-agent-key="${source}" data-runtime="${source}" data-status="${escapeHtml(signal.status)}" aria-label="${source} ${active ? "selected " : ""}${escapeHtml(accessibleIdentity)} ${escapeHtml(signal.label)}" aria-pressed="${active ? "true" : "false"}">
       <span class="premium-agent-logo">${agentLogo(source)}</span>
-      <span class="premium-agent-name"><b>${source.toUpperCase()}</b><small>${source === "codex" ? surfaceModeLabel() : "REMOTE"}</small></span>
+      <span class="premium-agent-name"><b>${source.toUpperCase()}</b><small data-codex-model-readout="${source === "codex" ? "true" : "false"}">${escapeHtml(identity)}</small></span>
       ${active ? '<span class="premium-agent-selected">ACTIVE</span>' : ""}
       <span class="premium-agent-rule" aria-hidden="true"></span>
       <span class="premium-agent-state"><b>${escapeHtml(signal.label)}</b><small>${escapeHtml(signal.detail)}</small></span>
@@ -1434,6 +1436,34 @@ function renderAgentKeys() {
       </button>
     `;
   }).join("");
+}
+
+function codexModelReadout() {
+  const runtime = state.runtimes.find((item) => item.source === "codex");
+  const details = state.codexSurfaceMode === "desktop"
+    ? runtime?.details?.surfaces?.desktop || runtime?.details
+    : runtime?.details?.surfaces?.cli || runtime?.details;
+  const model = compactCodexModelName(details?.model);
+  if (!model) return "MODEL —";
+  const reasoning = normalizeUiReasoning(details?.reasoning);
+  return `${model}${reasoning ? ` · ${reasoning.toUpperCase()}` : ""}`;
+}
+
+function compactCodexModelName(value) {
+  const text = String(value || "").trim();
+  if (!text || /^(?:unknown|local|default|configured default)$/i.test(text)) return "";
+  const normalized = text.toUpperCase().replace(/^GPT[-\s]*/, "").replace(/\s+/g, " ");
+  for (const [pattern, label] of [
+    [/^6(?:\.\d+)?\s+ASTRA\b/, "ASTRA"],
+    [/^5\.6\s+SOL\b/, "SOL"],
+    [/^5\.6\s+TERRA\b/, "TERRA"],
+    [/^5\.6\s+LUNA\b/, "LUNA"],
+    [/^5\.5\b/, "5.5"],
+    [/^5\.4\s+MINI\b/, "5.4 MINI"]
+  ]) {
+    if (pattern.test(normalized)) return label;
+  }
+  return normalized.slice(0, 18);
 }
 
 function renderVioletAgentConsole() {
