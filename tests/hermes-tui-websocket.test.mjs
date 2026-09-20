@@ -310,3 +310,58 @@ test("observes activity from a configured live TUI session without inventing a p
   assert.equal(published.filter((event) => event.type === "task.completed").length, 1);
   assert.equal(adapter.wsSessions.size, 0);
 });
+
+test("applies reasoning to the exact TUI session before prompt submission", async () => {
+  const requests = [];
+  const wsClient = {
+    isConfigured: () => true,
+    describe: () => ({ transport: "hermes-tui/websocket", configured: true, connected: true, pendingRequests: 0 }),
+    request: async (method, params) => {
+      requests.push({ method, params });
+      if (method === "session.create") return { session_id: "reasoning-session" };
+      if (method === "config.set") return { ok: true };
+      if (method === "prompt.submit") return { accepted: true };
+      throw new Error(`unexpected method ${method}`);
+    }
+  };
+  const { adapter } = createAdapter(wsClient);
+
+  await adapter.sendMessage({ content: "first", reasoning: "high" });
+  assert.deepEqual(requests.map((request) => request.method), ["session.create", "prompt.submit"]);
+  assert.equal(requests[0].params.reasoning_effort, "high");
+
+  requests.length = 0;
+  await adapter.sendMessage({
+    content: "second",
+    reasoning: "xhigh",
+    conversationId: "hermes:reasoning-session"
+  });
+  assert.deepEqual(requests.map((request) => request.method), ["config.set", "prompt.submit"]);
+  assert.deepEqual(requests[0].params, {
+    session_id: "reasoning-session",
+    key: "reasoning",
+    value: "xhigh"
+  });
+});
+
+test("NEW creates a fresh TUI session instead of reusing the previous one", async () => {
+  const requests = [];
+  const wsClient = {
+    isConfigured: () => true,
+    describe: () => ({ transport: "hermes-tui/websocket", configured: true, connected: true, pendingRequests: 0 }),
+    request: async (method, params) => {
+      requests.push({ method, params });
+      if (method === "session.create") return { session_id: "fresh-session" };
+      throw new Error(`unexpected method ${method}`);
+    }
+  };
+  const { adapter } = createAdapter(wsClient);
+  adapter.wsActiveSessionId = "previous-session";
+  adapter.activeSessionId = "previous-session";
+
+  const result = await adapter.runAction("new-task", { reasoning: "high" });
+
+  assert.equal(result.sessionId, "fresh-session");
+  assert.deepEqual(requests.map((request) => request.method), ["session.create"]);
+  assert.equal(requests[0].params.reasoning_effort, "high");
+});

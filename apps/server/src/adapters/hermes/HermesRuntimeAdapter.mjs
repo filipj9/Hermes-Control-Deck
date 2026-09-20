@@ -23,6 +23,7 @@ export class HermesRuntimeAdapter {
     this.eventBus = eventBus;
     this.activeSessionId = undefined;
     this.wsActiveSessionId = undefined;
+    this.wsReasoningBySession = new Map();
     this.activeStreamId = undefined;
     this.streamStates = new Map();
     this.wsSessions = new Map();
@@ -416,6 +417,7 @@ export class HermesRuntimeAdapter {
     };
 
     const result = await this.startHermesChat(payload);
+    const reasoningApplied = result?.reasoning_applied !== false;
 
     const streamId = result?.stream_id || result?.active_stream_id;
     this.activeStreamId = streamId;
@@ -424,7 +426,15 @@ export class HermesRuntimeAdapter {
       source: this.source,
       type: "conversation.message.created",
       conversationId: `hermes:${sessionId}`,
-      payload: { role: "user", content, sessionId, streamId, reasoning }
+      payload: {
+        role: "user",
+        content,
+        sessionId,
+        streamId,
+        reasoning: reasoningApplied ? reasoning : undefined,
+        requestedReasoning: reasoning,
+        reasoningApplied
+      }
     });
 
     if (streamId) {
@@ -445,7 +455,14 @@ export class HermesRuntimeAdapter {
       role: "user",
       content,
       createdAt: new Date().toISOString(),
-      metadata: { result, sessionId, streamId, reasoning }
+      metadata: {
+        result,
+        sessionId,
+        streamId,
+        reasoning: reasoningApplied ? reasoning : undefined,
+        requestedReasoning: reasoning,
+        reasoningApplied
+      }
     };
   }
 
@@ -539,7 +556,7 @@ export class HermesRuntimeAdapter {
     const decisionResult = await this.sendApprovalDecision(approval, sessionId, choice);
     const result = decisionResult.result;
     const resolvedApprovalId = decisionResult.approvalId || approval.id;
-    await this.settleStreamAfterApproval(approval);
+    await this.settleStreamAfterApproval(approval, { choice });
     this.externalApprovals.delete(approval.id);
     this.pendingApprovalSessions.delete(approval.id);
 
@@ -711,7 +728,11 @@ export class HermesRuntimeAdapter {
     }
     if (action === "new-task") {
       this.activeSessionId = undefined;
-      const sessionId = await this.ensureSession();
+      this.wsActiveSessionId = undefined;
+      const sessionId = await this.ensureSession(undefined, {
+        forceNew: true,
+        reasoning: normalizeReasoning(payload.reasoning)
+      });
       const content = payload.prompt || payload.title;
       if (content) {
         return this.sendMessage({
@@ -750,7 +771,11 @@ export class HermesRuntimeAdapter {
     let promptAttempted = false;
     let state;
     try {
-      const sessionId = await this.ensureSession(input.conversationId, { transport: "websocket" });
+      const sessionId = await this.ensureSession(input.conversationId, {
+        transport: "websocket",
+        reasoning
+      });
+      await this.ensureWsReasoning(sessionId, reasoning);
       const taskId = `hermes:ws:${sessionId}:${Date.now()}`;
       const now = new Date().toISOString();
       state = {
@@ -762,6 +787,7 @@ export class HermesRuntimeAdapter {
         updatedAt: now,
         waitingApproval: false,
         pendingApprovalId: undefined,
+        denied: false,
         taskPublished: false,
         terminalPublished: false
       };
@@ -975,7 +1001,7 @@ export class HermesRuntimeAdapter {
     }
 
     if (isWsTerminalEvent(eventType)) {
-      this.finalizeWsTask(state, "completed", eventPayload);
+      this.finalizeWsTask(state, state.denied ? "cancelled" : "completed", eventPayload);
       return;
     }
 
@@ -1076,16 +1102,18 @@ export class HermesRuntimeAdapter {
 
   async startHermesChat(payload) {
     const bodies = hasReasoningPayload(payload) ? [payload, stripReasoningPayload(payload)] : [payload];
+    const chatStartTimeoutMs = positiveInteger(this.config.chatStartTimeoutMs, 30000);
     let lastError;
 
     for (let index = 0; index < bodies.length; index += 1) {
       const body = bodies[index];
       try {
-        return await this.client.request(`${this.config.apiPrefix}/chat/start`, {
+        const result = await this.client.request(`${this.config.apiPrefix}/chat/start`, {
           method: "POST",
           body,
-          timeoutMs: Math.max(this.config.timeoutMs, 10000)
+          timeoutMs: Math.max(this.config.timeoutMs, chatStartTimeoutMs)
         });
+        return markReasoningFallback(result, index > 0);
       } catch (startError) {
         lastError = startError;
         const canRetryWithoutReasoning = index === 0
@@ -1099,12 +1127,12 @@ export class HermesRuntimeAdapter {
           const result = await this.client.request(`${this.config.apiPrefix}/chat`, {
             method: "POST",
             body,
-            timeoutMs: Math.max(this.config.timeoutMs, 20000)
+            timeoutMs: Math.max(this.config.timeoutMs, chatStartTimeoutMs, 20000)
           });
           if (result && typeof result === "object") {
-            result.fallback_from_chat_start = startError.message;
+            result.fallback_from_chat_start = true;
           }
-          return result;
+          return markReasoningFallback(result, index > 0);
         } catch (chatError) {
           lastError = chatError;
           const canRetryFallbackWithoutReasoning = index === 0
@@ -1130,6 +1158,8 @@ export class HermesRuntimeAdapter {
 
   async ensureSession(conversationId, options = {}) {
     const useWebSocket = options.transport !== "http" && this.wsClient?.isConfigured?.();
+    const forceNew = options.forceNew === true;
+    const reasoning = normalizeReasoning(options.reasoning);
     const explicitSessionId = stripHermesPrefix(conversationId);
     if (explicitSessionId) {
       if (useWebSocket && this.wsActiveSessionId !== explicitSessionId) {
@@ -1140,26 +1170,30 @@ export class HermesRuntimeAdapter {
     }
 
     if (useWebSocket) {
-      if (this.wsActiveSessionId) {
+      if (!forceNew && this.wsActiveSessionId) {
         this.setActiveSessionId(this.wsActiveSessionId);
         return this.wsActiveSessionId;
       }
 
-      const configuredSessionId = stripHermesPrefix(this.config.ws?.sessionId);
+      const configuredSessionId = forceNew ? undefined : stripHermesPrefix(this.config.ws?.sessionId);
       let sessionId = configuredSessionId;
+      let createdNewSession = false;
       if (sessionId) {
         const resumed = await this.wsClient.request("session.resume", { session_id: sessionId });
         sessionId = sessionIdFromResumeResult(resumed) || sessionId;
       } else {
+        createdNewSession = true;
         const created = await this.wsClient.request("session.create", {
           cols: this.config.gateway?.cols || 120,
-          title: "Control Deck"
+          title: "Control Deck",
+          ...(reasoning ? { reasoning_effort: reasoning } : {})
         });
         sessionId = created?.session_id || created?.session?.session_id;
       }
       if (!sessionId) throw new Error("Hermes TUI did not return session_id.");
       this.wsActiveSessionId = String(sessionId);
       this.setActiveSessionId(this.wsActiveSessionId);
+      if (createdNewSession && reasoning) this.wsReasoningBySession.set(this.wsActiveSessionId, reasoning);
       this.eventBus.publish({
         source: this.source,
         type: "conversation.created",
@@ -1199,6 +1233,23 @@ export class HermesRuntimeAdapter {
     if (next !== this.activeSessionId) this.externalApprovalLastScanAt = 0;
     this.activeSessionId = next;
     return this.activeSessionId;
+  }
+
+  async ensureWsReasoning(sessionId, reasoning) {
+    if (!reasoning || this.wsReasoningBySession.get(sessionId) === reasoning) return;
+    try {
+      await this.wsClient.request("config.set", {
+        session_id: sessionId,
+        key: "reasoning",
+        value: reasoning
+      });
+      this.wsReasoningBySession.set(sessionId, reasoning);
+    } catch (error) {
+      throw new HermesWsError(`Hermes session reasoning could not be set: ${error.message}`, {
+        beforeSend: true,
+        code: "reasoning_config_failed"
+      });
+    }
   }
 
   async findPendingApproval(sessionId, options = {}) {
@@ -1295,13 +1346,14 @@ export class HermesRuntimeAdapter {
     return approval;
   }
 
-  async settleStreamAfterApproval(approval) {
+  async settleStreamAfterApproval(approval, resolution = {}) {
     const wsTaskId = approval?.metadata?.wsTaskId;
     if (wsTaskId) {
       const wsState = this.wsSessions.get(wsTaskId);
       if (wsState && !wsState.terminalPublished) {
         wsState.waitingApproval = false;
         wsState.pendingApprovalId = undefined;
+        wsState.denied = resolution.choice === "deny";
         wsState.updatedAt = new Date().toISOString();
       }
     }
@@ -1313,16 +1365,18 @@ export class HermesRuntimeAdapter {
 
     state.waitingApproval = false;
     state.pendingApprovalId = undefined;
+    state.denied = resolution.choice === "deny";
     const backend = await this.probeStreamState(streamId, state.sessionId);
     if (backend.reported && !backend.active) {
+      const denied = resolution.choice === "deny";
       this.finalizeStream(state, {
         type: "task.completed",
         payload: {
-          status: "completed",
+          status: denied ? "cancelled" : "completed",
           streamId,
           event: "approval_resolved",
           synthetic: true,
-          reason: "approval_resolved_backend_inactive"
+          reason: denied ? "approval_denied_backend_inactive" : "approval_resolved_backend_inactive"
         }
       });
       return;
@@ -1572,6 +1626,7 @@ export class HermesRuntimeAdapter {
       streamId,
       sessionId,
       cancelRequested: false,
+      denied: false,
       terminalPublished: false,
       waitingApproval: false,
       pendingApprovalId: undefined,
@@ -1600,7 +1655,7 @@ export class HermesRuntimeAdapter {
               streamId: state.streamId,
               event: event.event,
               data: event.data,
-              ...(state.cancelRequested && terminal ? { status: "cancelled" } : {})
+              ...((state.cancelRequested || state.denied) && terminal ? { status: "cancelled" } : {})
             },
             raw: event.raw
           };
@@ -1928,6 +1983,13 @@ function stripReasoningPayload(payload) {
   delete stripped.reasoning_effort;
   delete stripped.effort;
   return stripped;
+}
+
+function markReasoningFallback(result, stripped) {
+  if (!stripped || !result || typeof result !== "object") return result;
+  result.reasoning_applied = false;
+  result.reasoning_fallback = "unsupported_by_hermes_webui";
+  return result;
 }
 
 function shouldRetryWithoutReasoning(...errors) {

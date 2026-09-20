@@ -8,6 +8,7 @@ import { createAuthToken, loadConfig } from "../apps/server/src/infrastructure/c
 const envKeys = [
   "HERMES_ENABLED",
   "HERMES_BASE_URL",
+  "HERMES_CHAT_START_TIMEOUT_MS",
   "CODEX_ENABLED",
   "CODEX_WORKDIR",
   "CONTROL_AUTH_TOKEN",
@@ -55,6 +56,7 @@ test("CLI-first config is explicit and valid without private defaults", () => {
   }, () => loadConfig(root));
 
   assert.equal(config.hermes.enabled, false);
+  assert.equal(config.hermes.chatStartTimeoutMs, 30000);
   assert.equal(config.codex.mode, "cli");
   assert.equal(config.codex.surface, "cli");
   assert.equal(config.codex.workdir, root);

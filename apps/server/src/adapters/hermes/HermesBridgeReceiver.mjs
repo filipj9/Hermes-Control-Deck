@@ -504,9 +504,15 @@ export class HermesBridgeReceiver {
   }
 
   persist() {
-    this.state = pruneTerminalApprovalState(
-      this.state,
-      this.config.maxTerminalApprovals
+    this.state.approvalsById = pruneBridgeRecords(
+      this.state.approvalsById,
+      this.config.maxTrackedRuns,
+      new Set(["pending", "decision_queued"])
+    );
+    this.state.decisionsById = pruneBridgeRecords(
+      this.state.decisionsById,
+      this.config.maxTrackedRuns,
+      new Set(["queued", "claimed"])
     );
     persistState(this.config.stateFile, this.state);
   }
@@ -749,6 +755,21 @@ function updateTrackedTask(input, task, maxTasks) {
   return Object.fromEntries(entries.slice(Math.max(0, entries.length - maxTasks)));
 }
 
+function pruneBridgeRecords(input, maximum, protectedStatuses) {
+  const entries = Object.entries(input || {});
+  const limit = Math.max(1, Number(maximum) || 1);
+  if (entries.length <= limit) return input || {};
+  entries.sort((left, right) => {
+    const leftProtected = protectedStatuses.has(String(left[1]?.status || ""));
+    const rightProtected = protectedStatuses.has(String(right[1]?.status || ""));
+    if (leftProtected !== rightProtected) return leftProtected ? -1 : 1;
+    const leftAt = Date.parse(left[1]?.updatedAt || left[1]?.requestedAt || left[1]?.createdAt || 0) || 0;
+    const rightAt = Date.parse(right[1]?.updatedAt || right[1]?.requestedAt || right[1]?.createdAt || 0) || 0;
+    return rightAt - leftAt;
+  });
+  return Object.fromEntries(entries.slice(0, limit));
+}
+
 function reconcileTrackedTasks(input, currentTask, event) {
   if (!currentTask?.conversationId || !["stream_start", "done"].includes(event.stage)) return input;
   const cutoff = Date.parse(event.timestamp || 0) || Date.now();
@@ -849,38 +870,6 @@ function updateDecisionState(input, event) {
     updatedAt: event.timestamp
   };
   return updated;
-}
-
-function pruneTerminalApprovalState(state, configuredLimit) {
-  const limit = Math.max(1, Math.min(Number(configuredLimit) || 50, 1000));
-  return {
-    ...state,
-    approvalsById: retainActiveAndRecentTerminal(
-      state.approvalsById,
-      (item) => ["pending", "decision_queued"].includes(item.status),
-      limit
-    ),
-    decisionsById: retainActiveAndRecentTerminal(
-      state.decisionsById,
-      (item) => ["queued", "claimed"].includes(item.status),
-      limit
-    )
-  };
-}
-
-function retainActiveAndRecentTerminal(input, isActive, terminalLimit) {
-  const entries = Object.entries(input || {});
-  const active = entries.filter(([, item]) => isActive(item));
-  const terminal = entries
-    .filter(([, item]) => !isActive(item))
-    .sort((left, right) => recordTimestamp(right[1]) - recordTimestamp(left[1]))
-    .slice(0, terminalLimit);
-  return Object.fromEntries([...active, ...terminal]);
-}
-
-function recordTimestamp(item) {
-  const timestamp = Date.parse(item?.updatedAt || item?.ackedAt || item?.resolvedAt || item?.createdAt || "");
-  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function approvalFromBridgeEvent(event) {

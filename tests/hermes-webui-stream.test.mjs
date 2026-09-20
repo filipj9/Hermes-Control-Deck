@@ -451,6 +451,112 @@ test("does not fall back to /chat after an ambiguous /chat/start transport failu
   assert.deepEqual(calls, ["/api/chat/start"]);
 });
 
+test("chat start keeps a 30 second identity window when the generic timeout is shorter", async () => {
+  const adapter = new HermesRuntimeAdapter({
+    apiPrefix: "/api",
+    baseUrl: "http://127.0.0.1:1",
+    profile: "default",
+    timeoutMs: 1000,
+    chatStartTimeoutMs: 30000
+  }, { publish() {} }, { monitorExternalApprovals: false });
+  let timeoutMs;
+  adapter.client.request = async (_route, options) => {
+    timeoutMs = options.timeoutMs;
+    return { stream_id: "slow-start-stream" };
+  };
+
+  await adapter.startHermesChat({ session_id: "slow-session", message: "test" });
+  assert.equal(timeoutMs, 30000);
+});
+
+test("reasoning fallback is explicit when Hermes rejects reasoning fields", async () => {
+  const adapter = new HermesRuntimeAdapter({
+    apiPrefix: "/api",
+    baseUrl: "http://127.0.0.1:1",
+    profile: "default",
+    timeoutMs: 1000,
+    chatStartTimeoutMs: 30000
+  }, { publish() {} }, { monitorExternalApprovals: false });
+  let calls = 0;
+  adapter.client.request = async (_route, options) => {
+    calls += 1;
+    if (options.body.reasoning) throw new Error("422 unknown reasoning field");
+    return { stream_id: "reasoning-fallback-stream" };
+  };
+
+  const result = await adapter.startHermesChat({
+    session_id: "reasoning-fallback-session",
+    message: "test",
+    reasoning: "high"
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.reasoning_applied, false);
+  assert.equal(result.reasoning_fallback, "unsupported_by_hermes_webui");
+});
+
+test("DENY closes an inactive approval stream as cancelled", async () => {
+  const published = [];
+  const adapter = new HermesRuntimeAdapter({
+    apiPrefix: "/api",
+    baseUrl: "http://127.0.0.1:1",
+    profile: "default",
+    timeoutMs: 1000
+  }, { publish: (event) => published.push(event) }, { monitorExternalApprovals: false });
+  adapter.streamStates.set("deny-stream", {
+    streamId: "deny-stream",
+    sessionId: "deny-session",
+    waitingApproval: true,
+    pendingApprovalId: "deny-approval",
+    terminalPublished: false
+  });
+  adapter.probeStreamState = async () => ({ reported: true, active: false });
+
+  await adapter.settleStreamAfterApproval({
+    id: "deny-approval",
+    metadata: { streamId: "deny-stream" }
+  }, { choice: "deny" });
+
+  assert.equal(published.at(-1).type, "task.completed");
+  assert.equal(published.at(-1).payload.status, "cancelled");
+  assert.equal(published.at(-1).payload.reason, "approval_denied_backend_inactive");
+  assert.equal(adapter.streamStates.has("deny-stream"), false);
+});
+
+test("DENY keeps a reattached active stream cancelled when Hermes later emits done", async () => {
+  const published = [];
+  const adapter = new HermesRuntimeAdapter({
+    apiPrefix: "/api",
+    baseUrl: "http://127.0.0.1:1",
+    profile: "default",
+    timeoutMs: 1000,
+    streamReconnectAttempts: 0
+  }, { publish: (event) => published.push(event) }, { monitorExternalApprovals: false });
+  const state = {
+    streamId: "deny-active-stream",
+    sessionId: "deny-active-session",
+    waitingApproval: true,
+    pendingApprovalId: "deny-active-approval",
+    terminalPublished: false,
+    reconnects: 0
+  };
+  adapter.streamStates.set(state.streamId, state);
+  adapter.probeStreamState = async () => ({ reported: true, active: true });
+  adapter.client.streamSse = async (_route, onEvent) => {
+    await onEvent({ event: "done", data: { ok: true }, raw: "synthetic-done" });
+  };
+
+  await adapter.settleStreamAfterApproval({
+    id: "deny-active-approval",
+    metadata: { streamId: state.streamId }
+  }, { choice: "deny" });
+  await state.promise;
+
+  const terminal = published.filter((event) => event.type === "task.completed");
+  assert.equal(terminal.length, 1);
+  assert.equal(terminal[0].payload.status, "cancelled");
+  assert.equal(adapter.streamStates.has(state.streamId), false);
+});
+
 test("explicit STOP can cancel an older tracked stream without touching the latest stream", async () => {
   const published = [];
   const adapter = new HermesRuntimeAdapter({

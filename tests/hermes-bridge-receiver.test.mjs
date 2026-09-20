@@ -480,33 +480,30 @@ test("keeps a fresh bridge run active while Hermes health catches up", () => {
   assert.equal(receiver.listTasks()[0].status, "running");
 });
 
-test("retains all active approval records and only the newest terminal history", () => {
+test("bounds persisted approval and decision records while preserving active entries first", () => {
   const context = setup();
-  context.config.maxTerminalApprovals = 2;
-  const approvalsById = {
-    pending: { id: "pending", status: "pending", updatedAt: "2026-08-01T00:00:00Z" }
-  };
-  const decisionsById = {
-    queued: { id: "queued", status: "queued", updatedAt: "2026-08-01T00:00:00Z" }
-  };
-  for (let index = 0; index < 5; index += 1) {
-    const timestamp = `2026-08-01T00:00:0${index}Z`;
-    approvalsById[`terminal-${index}`] = { id: `terminal-${index}`, status: "resolved", updatedAt: timestamp };
-    decisionsById[`terminal-${index}`] = { id: `terminal-${index}`, status: "acked", updatedAt: timestamp };
-  }
+  context.config.maxTrackedRuns = 2;
   fs.writeFileSync(context.config.stateFile, JSON.stringify({
     version: 2,
     acceptedEventIds: [],
     lastSeqByRun: {},
     tasksById: {},
-    approvalsById,
-    decisionsById
+    approvalsById: {
+      pendingOld: { id: "pendingOld", status: "pending", updatedAt: "2026-08-01T00:00:00Z" },
+      resolvedNew: { id: "resolvedNew", status: "resolved", updatedAt: "2026-08-03T00:00:00Z" },
+      resolvedOld: { id: "resolvedOld", status: "resolved", updatedAt: "2026-08-02T00:00:00Z" }
+    },
+    decisionsById: {
+      queuedOld: { id: "queuedOld", status: "queued", updatedAt: "2026-08-01T00:00:00Z" },
+      ackedNew: { id: "ackedNew", status: "acked", updatedAt: "2026-08-03T00:00:00Z" },
+      ackedOld: { id: "ackedOld", status: "acked", updatedAt: "2026-08-02T00:00:00Z" }
+    }
   }));
 
   const receiver = new HermesBridgeReceiver(context.config, context.eventBus);
   receiver.persist();
   const persisted = JSON.parse(fs.readFileSync(context.config.stateFile, "utf8"));
 
-  assert.deepEqual(Object.keys(persisted.approvalsById).sort(), ["pending", "terminal-3", "terminal-4"]);
-  assert.deepEqual(Object.keys(persisted.decisionsById).sort(), ["queued", "terminal-3", "terminal-4"]);
+  assert.deepEqual(Object.keys(persisted.approvalsById).sort(), ["pendingOld", "resolvedNew"]);
+  assert.deepEqual(Object.keys(persisted.decisionsById).sort(), ["ackedNew", "queuedOld"]);
 });
