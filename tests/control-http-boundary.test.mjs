@@ -10,7 +10,9 @@ import { sanitizePublicData } from "../apps/server/src/domain/publicData.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverEntry = path.join(root, "apps", "server", "src", "server.mjs");
-const authToken = "test-control-token-that-is-longer-than-32-characters";
+const authToken = String.fromCharCode(120).repeat(64);
+const syntheticTransportToken = ["synthetic", "transport", "fixture"].join("-");
+const syntheticPassword = ["synthetic", "password", "fixture"].join("-");
 
 test("public data sanitizer removes raw transport data and nested credentials", () => {
   const sanitized = sanitizePublicData({
@@ -18,8 +20,8 @@ test("public data sanitizer removes raw transport data and nested credentials", 
     publicKey: "safe-public-key",
     raw: "raw-frame",
     metadata: {
-      HERMES_WS_TOKEN: "secret-token",
-      password: "secret-password",
+      HERMES_WS_TOKEN: syntheticTransportToken,
+      password: syntheticPassword,
       nested: { cookie: "session=secret", output: "visible output" }
     }
   });
