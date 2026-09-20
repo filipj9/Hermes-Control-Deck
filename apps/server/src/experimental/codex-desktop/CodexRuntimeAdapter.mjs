@@ -723,7 +723,19 @@ export class CodexRuntimeAdapter {
     }
     if (action === "continue" || action === "send") {
       const content = payload.content || payload.prompt || payload.message || payload.title;
-      if (!content && action === "continue") return this.desktopBridge.continueTask();
+        if (!content && action === "continue") {
+          const requestedThreadKey = stripDesktopConversationId(payload.conversationId);
+          if (!requestedThreadKey) throw new Error("Select a Codex Desktop session before RUN.");
+          await this.desktopBridge.activateThread(requestedThreadKey);
+          const snapshot = await this.desktopBridge.continueTask(requestedThreadKey);
+          if (!snapshot?.working && !snapshot?.waitingApproval) {
+            return {
+              ...snapshot,
+              metadata: { noop: true, reason: "desktop-run-remained-idle" }
+            };
+          }
+          return snapshot;
+        }
       if (!content) throw new Error("Codex Desktop prompt is empty.");
       return this.sendMessage({
         ...payload,

@@ -242,7 +242,10 @@ export class CodexDesktopBridge {
 
   async sendPrompt(text, options = {}) {
     await this.enableMicroRuntime();
-    if (options.threadKey) await this.activateThread(options.threadKey);
+    if (options.threadKey) {
+      await this.activateThread(options.threadKey);
+      await this.waitForComposerThread(options.threadKey);
+    }
     const before = await this.snapshot();
     await this.insertComposerText(text);
     const inserted = await this.waitForComposerText(text, 800);
@@ -1012,9 +1015,63 @@ export class CodexDesktopBridge {
     }
   }
 
-  async continueTask() {
-    await this.runKeycap("RUN");
-    return this.snapshot();
+  async waitForComposerThread(threadKey) {
+    const expectedThreadKey = String(threadKey || "").replace(/^local:/, "");
+    if (!expectedThreadKey) throw new Error("Codex Desktop composer session id is required.");
+    let stableMatches = 0;
+    return this.waitForReasoningUi(
+      async () => {
+        let state;
+        try {
+          state = await this.evaluate(`(() => {
+            const expected = ${JSON.stringify(expectedThreadKey)};
+            const normalize = (value) => String(value ?? '').replace(/^local:/, '');
+            const active = normalize(
+              document.querySelector('[data-above-composer-conversation-id]')
+                ?.getAttribute('data-above-composer-conversation-id')
+            );
+            if (active !== expected) return null;
+            const visible = (element) => {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return rect.width > 0 && rect.height > 0
+                && style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && !element.disabled
+                && element.getAttribute('aria-disabled') !== 'true';
+            };
+            const composers = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+              .filter(visible);
+            return composers.length === 1 ? { threadKey: active, composerCount: 1 } : null;
+          })()`);
+        } catch (error) {
+          if (isNavigationRace(error)) state = null;
+          else throw error;
+        }
+        stableMatches = state?.threadKey === expectedThreadKey && state?.composerCount === 1
+          ? stableMatches + 1
+          : 0;
+        return state ? { ...state, stableMatches } : null;
+      },
+      (state) => state?.stableMatches >= 2,
+      { timeoutMs: 5000, description: "selected Codex Desktop composer" }
+    );
+  }
+
+  async continueTask(threadKey) {
+    await this.waitForComposerThread(threadKey);
+    await this.enableMicroRuntime();
+    await this.sendHid(ACTION_KEYS.send, 1);
+    await this.sendHid(ACTION_KEYS.send, 0);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        return await this.snapshot();
+      } catch (error) {
+        if (!isNavigationRace(error) || attempt === 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+      }
+    }
+    throw new Error("Codex Desktop RUN state could not be observed.");
   }
 
   async stop() {
@@ -1120,49 +1177,52 @@ export class CodexDesktopBridge {
       const layoutUrl = moduleUrl('codex-micro-layout-');
       const commandsUrl = moduleUrl('codex-micro-commands-');
       const bridgeUrl = moduleUrl('codex-micro-bridge-');
-      const appUrl = moduleUrl('app-initial-');
       const vscodeUrl = moduleUrl('vscode-api-');
       if (!layoutUrl) throw new Error('Codex Micro keycap registry is unavailable.');
       const layout = await import(layoutUrl);
       const keycapGetter = Object.values(layout).find((candidate) => {
         if (typeof candidate !== 'function') return false;
-        try { return candidate('FAST')?.id === 'FAST'; } catch { return false; }
+        try {
+          return candidate('FAST')?.id === 'FAST' && candidate('NEW')?.id === 'NEW';
+        } catch {
+          return false;
+        }
       });
       if (typeof keycapGetter !== 'function') throw new Error('Codex Micro keycap registry changed.');
-      const action = keycapGetter(keycapId)?.action;
+      const keycap = keycapGetter(keycapId);
+      if (keycap?.id !== keycapId) throw new Error('Codex Micro keycap is unavailable: ' + keycapId + '.');
+      const action = keycap.action;
       if (!action) throw new Error('The selected Codex Micro keycap has no action.');
       if (action.type === 'command') {
         let commandRunner = null;
-        // Current Codex Desktop bundles execute Micro commands through the
-        // app-initial runner; older bundles exposed run-command-* instead.
-        if (appUrl) {
-          const app = await import(appUrl);
-          if (typeof app.k8 === 'function') commandRunner = app.k8;
-        }
         if (commandsUrl) {
           const commands = await import(commandsUrl);
           if (!commands.n?.(action.command)) {
             throw new Error('Codex Desktop command is unavailable: ' + action.command + '.');
           }
         }
-        if (!commandRunner && bridgeUrl) {
+        if (bridgeUrl) {
           const source = await (await fetch(bridgeUrl)).text();
-          const match = source.match(/([A-Za-z_$][\\w$]*)\\(\\s*[A-Za-z_$][\\w$]*\\??\\.command\\s*,["'\x60]codex_micro_hid["'\x60]\\)/);
-          const local = match?.[1];
+          const hidCallers = new Set(
+            [...source.matchAll(/([A-Za-z_$][\\w$]*)\\([^)]{0,240},["'\x60]codex_micro_hid["'\x60]\\)/g)]
+              .map((match) => match[1])
+          );
           const pattern = /import\\s*\\{([^}]*)\\}\\s*from\\s*["']([^"']+)["']/g;
+          const candidates = [];
           let found;
-          while (local && (found = pattern.exec(source))) {
+          while ((found = pattern.exec(source))) {
             for (const specifier of found[1].split(',')) {
               const parts = specifier.trim().split(/\\s+as\\s+/);
               const exportName = parts[0];
               const localName = parts[1] ?? parts[0];
-              if (localName !== local) continue;
+              if (!hidCallers.has(localName)) continue;
               const namespace = await import(new URL(found[2], bridgeUrl).href);
-              if (typeof namespace[exportName] === 'function') commandRunner = namespace[exportName];
-              break;
+              if (typeof namespace[exportName] === 'function') candidates.push(namespace[exportName]);
             }
-            if (commandRunner) break;
           }
+          const unique = [...new Set(candidates)];
+          if (unique.length === 1) commandRunner = unique[0];
+          else if (unique.length > 1) throw new Error('Codex command runner is ambiguous.');
         }
         if (typeof commandRunner !== 'function') throw new Error('Codex command runner is unavailable.');
         if (!commandRunner(action.command, 'codex_micro_hid')) {
