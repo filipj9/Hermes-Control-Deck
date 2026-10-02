@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import path from "node:path";
 
 const MICRO_GATE = "3207467860";
 const DETECTION_KEY = "codex-micro-has-ever-been-detected";
+const MICRO_COMMAND_RUNNER_CALL_PATTERN = "!([A-Za-z_$][\\w$]*)\\([^)]{0,240}\\.command\\s*,\\s*[\"'`]codex_micro_hid[\"'`]\\)";
 const DEVICE_STATE = {
   type: "codex-micro-device-state-changed",
   state: {
@@ -13,8 +15,7 @@ const DEVICE_STATE = {
 
 const ACTION_KEYS = {
   approve: "ACT07",
-  reject: "ACT08",
-  send: "ACT12"
+  reject: "ACT08"
 };
 
 const EFFORT_ALIASES = new Map([
@@ -63,13 +64,13 @@ function nextEffortIndex(currentIndex, count, direction) {
   throw new Error(`Unknown Codex reasoning direction: ${direction}`);
 }
 
-
 export class CodexDesktopBridge {
   constructor(config, options = {}) {
     this.host = config.desktopCdpHost || "127.0.0.1";
     this.port = Number(config.desktopCdpPort || 4248);
     this.stateFile = config.desktopBridgeStateFile || "";
     this.requestTimeoutMs = Number(config.desktopBridgeRequestTimeoutMs || 6000);
+    this.projectName = config.workdir ? path.basename(config.workdir).toLowerCase() : "";
     this.onEvent = options.onEvent || (() => {});
     this.socket = undefined;
     this.target = undefined;
@@ -79,6 +80,7 @@ export class CodexDesktopBridge {
     this.lastSnapshot = undefined;
     this.sidebarThreadByCanonical = new Map();
     this.canonicalThreadBySidebar = new Map();
+    this.modelByThread = new Map();
   }
 
   describe() {
@@ -119,7 +121,6 @@ export class CodexDesktopBridge {
       + "Start the application and its loopback CDP endpoint yourself."
     );
   }
-
   async snapshot() {
     await this.ensureConnected();
     try {
@@ -150,6 +151,17 @@ export class CodexDesktopBridge {
     }
 
     const canonicalActive = this.canonicalThreadBySidebar.get(activeThreadKey) || activeThreadKey;
+    const concreteModel = String(snapshot.model || "").trim();
+    if (canonicalActive && concreteModel) {
+      this.modelByThread.delete(canonicalActive);
+      this.modelByThread.set(canonicalActive, concreteModel);
+      while (this.modelByThread.size > 100) {
+        this.modelByThread.delete(this.modelByThread.keys().next().value);
+      }
+      snapshot.model = concreteModel;
+    } else if (canonicalActive) {
+      snapshot.model = this.modelByThread.get(canonicalActive) || undefined;
+    }
     const seen = new Set();
     snapshot.activeThreadKey = canonicalActive || undefined;
     snapshot.conversations = (snapshot.conversations || []).flatMap((item) => {
@@ -190,9 +202,23 @@ export class CodexDesktopBridge {
         ?? document.querySelector('[data-app-action-sidebar-thread-id][aria-current="page"]')?.getAttribute('data-app-action-sidebar-thread-id')
         ?? null
       );
+      const visibleComposerThreadKey = () => {
+        const marker = [...document.querySelectorAll('[data-above-composer-conversation-id]')]
+          .find((element) => {
+            const container = element.parentElement ?? element;
+            const rect = container.getBoundingClientRect();
+            const style = getComputedStyle(container);
+            return rect.width > 0 && rect.height > 0
+              && style.display !== 'none'
+              && style.visibility !== 'hidden';
+          });
+        return marker
+          ? normalizeThreadKey(marker.getAttribute('data-above-composer-conversation-id'))
+          : null;
+      };
       const activeThreadKey = () =>
         normalizeThreadKey(
-          document.querySelector('[data-above-composer-conversation-id]')?.getAttribute('data-above-composer-conversation-id')
+          visibleComposerThreadKey()
           ?? document.querySelector('[data-app-action-sidebar-thread-id][data-app-action-sidebar-thread-active="true"]')?.getAttribute('data-app-action-sidebar-thread-id')
           ?? document.querySelector('[data-app-action-sidebar-thread-id][aria-current="page"]')?.getAttribute('data-app-action-sidebar-thread-id')
           ?? null
@@ -240,6 +266,25 @@ export class CodexDesktopBridge {
     });
   }
 
+  async submitComposer(expectedText, { timeoutMs = 1200 } = {}) {
+    const expected = String(expectedText || "").trim();
+    const deadline = Date.now() + timeoutMs;
+    do {
+      try {
+        return await this.runKeycap("CODEX");
+      } catch (error) {
+        if (!/Codex command is not active in the current view/i.test(String(error?.message || error))) {
+          throw error;
+        }
+        if (!expected || !(await this.composerContainsText(expected)) || Date.now() >= deadline) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    } while (Date.now() < deadline);
+    throw new Error("Codex composer submit did not become active.");
+  }
+
   async sendPrompt(text, options = {}) {
     await this.enableMicroRuntime();
     if (options.threadKey) {
@@ -252,8 +297,7 @@ export class CodexDesktopBridge {
     if (!inserted) {
       throw new Error("Codex Desktop did not confirm prompt insertion; SEND was not pressed.");
     }
-    await this.sendHid(ACTION_KEYS.send, 1);
-    await this.sendHid(ACTION_KEYS.send, 0);
+    await this.submitComposer(text);
     const deadline = Date.now() + 5000;
     let snapshot = await this.snapshot();
     while (
@@ -312,6 +356,28 @@ export class CodexDesktopBridge {
     }
   }
 
+  async readVisibleComposerText() {
+    try {
+      return await this.evaluate(`(() => {
+        const visible = (element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden'
+            && rect.width > 0 && rect.height > 0;
+        };
+        const composers = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+          .filter(visible);
+        if (composers.length !== 1) return null;
+        const element = composers[0];
+        return String(element.value ?? element.innerText ?? element.textContent ?? '')
+          .trim().replace(/\s+/g, ' ');
+      })()`);
+    } catch (error) {
+      if (isNavigationRace(error)) return null;
+      throw error;
+    }
+  }
+
   async waitForComposerText(text, timeoutMs = 800) {
     const deadline = Date.now() + timeoutMs;
     do {
@@ -351,8 +417,8 @@ export class CodexDesktopBridge {
         element.textContent
       ].filter(Boolean).join(' ').trim().replace(/\\s+/g, ' ');
       const pattern = decision === 'approve'
-        ? /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)(?:\s*(?:enter|return|⏎|↵))?$/i
-        : /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)(?:\s*(?:esc|escape))?$/i;
+        ? /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)(?:\\s*(?:enter|return|⏎|↵))?$/i
+        : /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)(?:\\s*(?:esc|escape))?$/i;
       const candidates = [...document.querySelectorAll('button, [role="button"]')]
         .filter(visible)
         .filter((element) => pattern.test(label(element)));
@@ -393,38 +459,24 @@ export class CodexDesktopBridge {
     return this.snapshot();
   }
 
-  async adjustReasoning(direction) {
-    const key = REASONING_KEYS[direction];
-    if (!key) throw new Error(`Unknown Codex reasoning direction: ${direction}`);
-    await this.enableMicroRuntime();
-    const before = await this.readReasoningLevel();
-    await this.sendHid(key, 2);
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    let after = await this.readReasoningLevel();
-    if (after && after !== before) return { ok: true, from: before, to: after, mechanism: "encoder" };
-
-    await this.sendHid(key, 1);
-    await this.sendHid(key, 0);
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    after = await this.readReasoningLevel();
-    if (after && after !== before) return { ok: true, from: before, to: after, mechanism: "encoder-pulse" };
-
-    return this.selectAdjacentReasoning(direction, before);
-  }
-
   async readReasoningLevel() {
     await this.ensureConnected();
-    return this.evaluate(`(() =>
-      document.querySelector('[data-selected-reasoning-effort]')
-        ?.getAttribute('data-selected-reasoning-effort') ?? null
-    )()`);
+    return this.evaluate(`(() => {
+      const trigger = [...document.querySelectorAll('[data-selected-reasoning-effort]')]
+        .find((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0
+            && style.display !== 'none'
+            && style.visibility !== 'hidden';
+        });
+      return trigger?.getAttribute('data-selected-reasoning-effort') ?? null;
+    })()`);
   }
 
   async readReasoningTriggerState() {
     await this.ensureConnected();
     return this.evaluate(`(() => {
-      const trigger = document.querySelector('[data-selected-reasoning-effort]');
-      if (!trigger) return null;
       const visible = (element) => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -433,6 +485,8 @@ export class CodexDesktopBridge {
           && style.visibility !== 'hidden'
           && Number(style.opacity || 1) > 0;
       };
+      const trigger = [...document.querySelectorAll('[data-selected-reasoning-effort]')].find(visible);
+      if (!trigger) return null;
       const model = [...trigger.querySelectorAll('[class*="ModelPickerTriggerModelText"]')]
         .find(visible)?.textContent?.trim()
         || document.querySelector('[data-model-picker-view-toggle="true"] [class*="ViewToggleModelLabel"]')?.textContent?.trim() || '';
@@ -454,17 +508,21 @@ export class CodexDesktopBridge {
           state = await this.evaluate(`(() => {
             const expected = ${JSON.stringify(expectedThreadKey)};
             const normalize = (value) => String(value ?? '').replace(/^local:/, '');
+            const visible = (element) => {
+              if (!element) return false;
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return rect.width > 0 && rect.height > 0
+                && style.display !== 'none'
+                && style.visibility !== 'hidden';
+            };
+            const marker = [...document.querySelectorAll('[data-above-composer-conversation-id]')]
+              .find((element) => visible(element.parentElement ?? element));
             const active = normalize(
-              document.querySelector('[data-above-composer-conversation-id]')
-                ?.getAttribute('data-above-composer-conversation-id')
+              marker?.getAttribute('data-above-composer-conversation-id')
             );
-            const trigger = document.querySelector('[data-selected-reasoning-effort]');
+            const trigger = [...document.querySelectorAll('[data-selected-reasoning-effort]')].find(visible);
             if (active !== expected || !trigger) return null;
-            const rect = trigger.getBoundingClientRect();
-            const style = getComputedStyle(trigger);
-            if (rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') {
-              return null;
-            }
             return {
               threadKey: active,
               value: trigger.getAttribute('data-selected-reasoning-effort')
@@ -501,7 +559,13 @@ export class CodexDesktopBridge {
 
   async adjustReasoning(direction) {
     try {
-      const modern = await this.evaluate(`Boolean(document.querySelector('[data-codex-intelligence-trigger="true"][data-selected-reasoning-effort]'))`);
+      const modern = await this.evaluate(`(() => [...document.querySelectorAll('[data-codex-intelligence-trigger="true"][data-selected-reasoning-effort]')].some((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0
+          && style.display !== 'none'
+          && style.visibility !== 'hidden';
+      }))()`);
       if (modern) return await this.adjustReasoningSlider(direction);
       const before = await this.openEffortSubmenu();
       const currentIndex = before.options.findIndex((option) => option.value === before.value);
@@ -517,27 +581,44 @@ export class CodexDesktopBridge {
   async adjustReasoningSlider(direction) {
     if (!["increase", "decrease"].includes(direction)) throw new Error("Invalid reasoning direction.");
     const before = await this.readReasoningTriggerState();
-    const trigger = await this.evaluate(`(() => {
-      const e = document.querySelector('[data-codex-intelligence-trigger="true"]');
-      if (!e) return null;
-      const r = e.getBoundingClientRect();
-      return { open: e.getAttribute('data-state') === 'open', x: r.left+r.width/2, y:r.top+r.height/2 };
-    })()`);
-    if (!trigger) throw new Error("Codex reasoning trigger is unavailable.");
     try {
-      if (!trigger.open) await this.clickPoint(trigger.x, trigger.y);
       const readSlider = () => this.evaluate(`(() => {
         const controls = [...document.querySelectorAll('[data-reasoning-slider="true"]')]
           .filter(e => { const r=e.getBoundingClientRect(); return r.width>0 && r.height>0; });
         if (controls.length !== 1) return null;
         const slider = controls[0].querySelector('[role="slider"]');
         const model = document.querySelector('[data-model-picker-view-toggle="true"] [class*="ViewToggleModelLabel"]')?.textContent?.trim();
+        const selected = [...document.querySelectorAll('[data-selected-reasoning-effort]')]
+          .find(e => { const r=e.getBoundingClientRect(); return r.width>0 && r.height>0; });
         if (!slider || !model) return null;
         return { min:Number(slider.getAttribute('aria-valuemin')), max:Number(slider.getAttribute('aria-valuemax')),
           current:Number(slider.getAttribute('aria-valuenow')), model,
-          value:document.querySelector('[data-selected-reasoning-effort]')?.getAttribute('data-selected-reasoning-effort') };
+          value:selected?.getAttribute('data-selected-reasoning-effort') };
       })()`);
-      const initial = await this.waitForReasoningUi(readSlider, Boolean, { description:"Codex reasoning slider" });
+      let initial;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const trigger = await this.evaluate(`(() => {
+          const e = [...document.querySelectorAll('[data-codex-intelligence-trigger="true"]')]
+            .find(element => { const r=element.getBoundingClientRect(); return r.width>0 && r.height>0; });
+          if (!e) return null;
+          const r = e.getBoundingClientRect();
+          return { open: e.getAttribute('data-state') === 'open', x: r.left+r.width/2, y:r.top+r.height/2 };
+        })()`);
+        if (!trigger) throw new Error("Codex reasoning trigger is unavailable.");
+        try {
+          if (!trigger.open) await this.clickPoint(trigger.x, trigger.y);
+          initial = await this.waitForReasoningUi(readSlider, Boolean, {
+            timeoutMs: 5000,
+            description: "Codex reasoning slider"
+          });
+          break;
+        } catch (error) {
+          if (attempt === 1 || !/Codex reasoning slider timed out/i.test(error.message)) throw error;
+          await this.closeReasoningMenu().catch(() => {});
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+      }
+      if (!initial) throw new Error("Codex reasoning slider is unavailable.");
       if (![initial.min, initial.max, initial.current].every(Number.isInteger)
         || initial.max <= initial.min || initial.current < initial.min || initial.current > initial.max) {
         throw new Error("Codex reasoning slider bounds are invalid.");
@@ -645,7 +726,8 @@ export class CodexDesktopBridge {
 
   async openEffortSubmenu() {
     const readTrigger = () => this.evaluate(`(() => {
-      const element = document.querySelector('[data-selected-reasoning-effort]');
+      const element = [...document.querySelectorAll('[data-selected-reasoning-effort]')]
+        .find(candidate => { const r=candidate.getBoundingClientRect(); return r.width>0 && r.height>0; });
       if (!element) return null;
       const rect = element.getBoundingClientRect();
       return {
@@ -785,7 +867,8 @@ export class CodexDesktopBridge {
 
   async closeReasoningMenu() {
     const readClose = () => this.evaluate(`(() => {
-      const element = document.querySelector('[data-selected-reasoning-effort]');
+      const element = [...document.querySelectorAll('[data-selected-reasoning-effort]')]
+        .find(candidate => { const r=candidate.getBoundingClientRect(); return r.width>0 && r.height>0; });
       if (!element || element.getAttribute('data-state') !== 'open') return null;
       const rect = element.getBoundingClientRect();
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -793,7 +876,8 @@ export class CodexDesktopBridge {
     const close = await readClose();
     if (close) {
       const isClosed = () => this.evaluate(`(() =>
-        document.querySelector('[data-selected-reasoning-effort]')
+        [...document.querySelectorAll('[data-selected-reasoning-effort]')]
+          .find(candidate => { const r=candidate.getBoundingClientRect(); return r.width>0 && r.height>0; })
           ?.getAttribute('data-state') !== 'open'
       )()`);
       await this.evaluate(`(() => {
@@ -868,7 +952,8 @@ export class CodexDesktopBridge {
   async pressKey(key) {
     const codes = {
       ArrowLeft: { code: "ArrowLeft", windowsVirtualKeyCode: 37 },
-      ArrowRight: { code: "ArrowRight", windowsVirtualKeyCode: 39 }
+      ArrowRight: { code: "ArrowRight", windowsVirtualKeyCode: 39 },
+      Escape: { code: "Escape", windowsVirtualKeyCode: 27 }
     };
     const details = codes[key];
     if (!details) throw new Error(`Unsupported Codex Desktop key: ${key}`);
@@ -891,7 +976,7 @@ export class CodexDesktopBridge {
     try {
       const control = await this.clickVisibleNewTaskControl();
       const changed = await this.waitForActiveThreadChange(before.activeThreadKey, 8000);
-      if (changed) return changed;
+      if (changed && this.isConfirmedNewTaskSnapshot(before, changed)) return changed;
       visibleError = new Error(`Visible control ${control.control} did not open a new composer.`);
     } catch (error) {
       visibleError = error;
@@ -900,7 +985,7 @@ export class CodexDesktopBridge {
     try {
       await this.runKeycap("NEW");
       const changed = await this.waitForActiveThreadChange(before.activeThreadKey, 5000);
-      if (changed) return changed;
+      if (changed && this.isConfirmedNewTaskSnapshot(before, changed)) return changed;
     } catch (nativeError) {
       throw new Error(
         `Codex Desktop new task failed. Visible control: ${visibleError?.message || "unavailable"}. `
@@ -911,6 +996,15 @@ export class CodexDesktopBridge {
     throw new Error(
       `Codex Desktop new task was not confirmed. Visible control: ${visibleError?.message || "unavailable"}.`
     );
+  }
+
+  isConfirmedNewTaskSnapshot(before, current) {
+    if (!current) return false;
+    if (current.newComposerConfirmed === true && !current.activeThreadKey) return true;
+    const currentKey = String(current.activeThreadKey || "");
+    if (!currentKey || currentKey === String(before?.activeThreadKey || "")) return false;
+    const knownBefore = new Set((before?.conversations || []).map((item) => String(item.threadKey || "")));
+    return !knownBefore.has(currentKey);
   }
 
   async clickVisibleNewTaskControl() {
@@ -935,6 +1029,7 @@ export class CodexDesktopBridge {
         text: normalized(element.textContent)
       });
       const projectNew = /^(start|create|begin|rozpocznij|utworz|utwórz) (a )?(new|nowy|nowa) (chat|task|thread|conversation|czat|zadanie|watek|wątek|rozmowe|rozmowę) (in|for|w) .+/i;
+      const projectName = ${JSON.stringify(this.projectName)};
       const exact = /^(new|start new|create new|nowy|utworz|utwórz) (chat|task|thread|conversation|project|czat|zadanie|watek|wątek|rozmowe|rozmowę|projekt)( \\(.*\\))?$/i;
       const machineHint = /(^|[-_:])(new|create)[-_:]?(chat|task|thread|conversation|project)($|[-_:])/i;
       const candidates = [...document.querySelectorAll('button, [role="button"]')]
@@ -942,8 +1037,8 @@ export class CodexDesktopBridge {
         .map((element) => {
           const labels = describe(element);
           let score = 0;
-          if (projectNew.test(labels.aria)) score = Math.max(score, 700);
-          if (projectNew.test(labels.title)) score = Math.max(score, 650);
+          if (projectNew.test(labels.aria) && projectName && labels.aria.endsWith(' ' + projectName)) score = Math.max(score, 700);
+          if (projectNew.test(labels.title) && projectName && labels.title.endsWith(' ' + projectName)) score = Math.max(score, 650);
           if (exact.test(labels.aria)) score = Math.max(score, 500);
           if (exact.test(labels.title)) score = Math.max(score, 450);
           if (machineHint.test(labels.testId)) score = Math.max(score, 400);
@@ -992,7 +1087,7 @@ export class CodexDesktopBridge {
       if (currentKey && currentKey !== previous) return current;
       if (!currentKey && await this.hasVisibleComposer()) {
         stableNewComposerChecks += 1;
-        if (stableNewComposerChecks >= 3) return current;
+        if (stableNewComposerChecks >= 3) return { ...current, newComposerConfirmed: true };
       } else {
         stableNewComposerChecks = 0;
       }
@@ -1026,9 +1121,17 @@ export class CodexDesktopBridge {
           state = await this.evaluate(`(() => {
             const expected = ${JSON.stringify(expectedThreadKey)};
             const normalize = (value) => String(value ?? '').replace(/^local:/, '');
+            const marker = [...document.querySelectorAll('[data-above-composer-conversation-id]')]
+              .find((element) => {
+                const container = element.parentElement ?? element;
+                const rect = container.getBoundingClientRect();
+                const style = getComputedStyle(container);
+                return rect.width > 0 && rect.height > 0
+                  && style.display !== 'none'
+                  && style.visibility !== 'hidden';
+              });
             const active = normalize(
-              document.querySelector('[data-above-composer-conversation-id]')
-                ?.getAttribute('data-above-composer-conversation-id')
+              marker?.getAttribute('data-above-composer-conversation-id')
             );
             if (active !== expected) return null;
             const visible = (element) => {
@@ -1061,11 +1164,16 @@ export class CodexDesktopBridge {
   async continueTask(threadKey) {
     await this.waitForComposerThread(threadKey);
     await this.enableMicroRuntime();
-    await this.sendHid(ACTION_KEYS.send, 1);
-    await this.sendHid(ACTION_KEYS.send, 0);
+    const composerText = await this.readVisibleComposerText();
+    if (composerText) await this.submitComposer(composerText);
     for (let attempt = 0; attempt < 4; attempt += 1) {
       try {
-        return await this.snapshot();
+        const snapshot = await this.snapshot();
+        const submitted = Boolean(composerText)
+          && !(await this.composerContainsText(composerText));
+        return submitted
+          ? { ...snapshot, metadata: { ...snapshot.metadata, submitted: true } }
+          : snapshot;
       } catch (error) {
         if (!isNavigationRace(error) || attempt === 3) throw error;
         await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
@@ -1121,7 +1229,7 @@ export class CodexDesktopBridge {
         if (findCandidates().length === 0) return { ok: true, control, confirmed: true };
       }
       return { ok: false, reason: 'stop-not-confirmed', candidates: findCandidates().map(normalized).slice(0, 8) };
-    })()`);
+    })()`, Math.max(this.requestTimeoutMs, 20_000));
     if (!result.ok) throw new Error(`Codex Desktop stop failed: ${result.reason}.`);
     this.onEvent({ type: "task.stopped", payload: result });
     return result;
@@ -1142,13 +1250,15 @@ export class CodexDesktopBridge {
         ...[...document.querySelectorAll('link[href], script[src]')].map((element) => element.href || element.src),
         ...performance.getEntriesByType('resource').map((entry) => entry.name)
       ])].filter((url) => url.includes('/assets/') && url.endsWith('.js'));
-      const likely = urls.filter((url) => /(?:vscode-api|codex-micro|app-initial|artifact-tab-content)/.test(url)).slice(0, 120);
+      const likely = urls.filter((url) => /(?:vscode-api|codex-micro|app-initial|app-shared|artifact-tab-content)/.test(url)).slice(0, 120);
       for (const url of likely) {
         try {
           const module = await import(url);
           const bus = Object.values(module).find((candidate) =>
             candidate && typeof candidate === 'object' &&
-            (typeof candidate.dispatchHostMessage === 'function' || typeof candidate.dispatchMessage === 'function')
+            (typeof candidate.dispatchHostMessage === 'function' || typeof candidate.dispatchMessage === 'function') &&
+            candidate.handlers instanceof Map &&
+            (candidate.handlers.get(message.type)?.size ?? 0) > 0
           );
           if (!bus) continue;
           const dispatch = bus.dispatchHostMessage ?? bus.dispatchMessage;
@@ -1178,6 +1288,8 @@ export class CodexDesktopBridge {
       const commandsUrl = moduleUrl('codex-micro-commands-');
       const bridgeUrl = moduleUrl('codex-micro-bridge-');
       const vscodeUrl = moduleUrl('vscode-api-');
+      const sharedUrl = moduleUrl('app-shared-');
+      const appUrl = moduleUrl('app-initial-');
       if (!layoutUrl) throw new Error('Codex Micro keycap registry is unavailable.');
       const layout = await import(layoutUrl);
       const keycapGetter = Object.values(layout).find((candidate) => {
@@ -1204,20 +1316,56 @@ export class CodexDesktopBridge {
         if (bridgeUrl) {
           const source = await (await fetch(bridgeUrl)).text();
           const hidCallers = new Set(
-            [...source.matchAll(/([A-Za-z_$][\\w$]*)\\([^)]{0,240},["'\x60]codex_micro_hid["'\x60]\\)/g)]
+            [...source.matchAll(new RegExp(${JSON.stringify(MICRO_COMMAND_RUNNER_CALL_PATTERN)}, 'g'))]
               .map((match) => match[1])
           );
           const pattern = /import\\s*\\{([^}]*)\\}\\s*from\\s*["']([^"']+)["']/g;
-          const candidates = [];
+          const importedFunctions = new Map();
           let found;
           while ((found = pattern.exec(source))) {
+            const namespace = await import(new URL(found[2], bridgeUrl).href);
             for (const specifier of found[1].split(',')) {
               const parts = specifier.trim().split(/\\s+as\\s+/);
               const exportName = parts[0];
               const localName = parts[1] ?? parts[0];
-              if (!hidCallers.has(localName)) continue;
-              const namespace = await import(new URL(found[2], bridgeUrl).href);
-              if (typeof namespace[exportName] === 'function') candidates.push(namespace[exportName]);
+              if (typeof namespace[exportName] === 'function') {
+                importedFunctions.set(localName, namespace[exportName]);
+              }
+            }
+          }
+          const candidates = [];
+          for (const caller of hidCallers) {
+            if (importedFunctions.has(caller)) {
+              candidates.push(importedFunctions.get(caller));
+              continue;
+            }
+            // 26.924 wraps the imported dispatcher in a local capability guard:
+            // function Qt(store, command, source) { ... Fe(command, source) }.
+            // Follow only one exact imported delegate for those two parameters.
+            const declarationAt = source.indexOf('function ' + caller + '(');
+            if (declarationAt < 0) continue;
+            const parametersAt = declarationAt + ('function ' + caller + '(').length;
+            const parametersEnd = source.indexOf(')', parametersAt);
+            if (parametersEnd < 0) continue;
+            const parameters = source.slice(parametersAt, parametersEnd).split(',').map((part) => part.trim());
+            if (parameters.length < 3 || !parameters[1] || !parameters[2]) continue;
+            const nextFunctionAt = source.indexOf('}function ', parametersEnd + 1);
+            const wrapperEnd = nextFunctionAt >= 0 && nextFunctionAt < parametersEnd + 1200
+              ? nextFunctionAt + 1
+              : parametersEnd + 1200;
+            const wrapper = source.slice(parametersEnd + 1, wrapperEnd).replace(/\\s+/g, '');
+            const hasExactCall = (name) => {
+              const call = name + '(' + parameters[1] + ',' + parameters[2] + ')';
+              let at = wrapper.indexOf(call);
+              while (at >= 0) {
+                if (at === 0 || !/[A-Za-z0-9_$]/.test(wrapper[at - 1])) return true;
+                at = wrapper.indexOf(call, at + 1);
+              }
+              return false;
+            };
+            const delegatedNames = [...importedFunctions.keys()].filter(hasExactCall);
+            if (delegatedNames.length === 1) {
+              candidates.push(importedFunctions.get(delegatedNames[0]));
             }
           }
           const unique = [...new Set(candidates)];
@@ -1230,12 +1378,17 @@ export class CodexDesktopBridge {
         }
         return { ok: true, action: action.type };
       }
-      if (!vscodeUrl) throw new Error('Codex event module is unavailable.');
-      const vscode = await import(vscodeUrl);
-      const bus = [vscode.g, vscode.m, ...Object.values(vscode)].find((candidate) =>
-        candidate && typeof candidate === 'object' &&
-        (typeof candidate.dispatchHostMessage === 'function' || typeof candidate.dispatchMessage === 'function')
-      );
+      let bus = null;
+      for (const eventUrl of [vscodeUrl, sharedUrl, appUrl, bridgeUrl].filter(Boolean)) {
+        const module = await import(eventUrl);
+        bus = Object.values(module).find((candidate) =>
+          candidate && typeof candidate === 'object' &&
+          typeof candidate.dispatchHostMessage === 'function' &&
+          candidate.handlers instanceof Map &&
+          (candidate.handlers.get('codex-micro-insert-composer-text')?.size ?? 0) > 0
+        ) ?? bus;
+        if (bus) break;
+      }
       if (action.type === 'composer-text' && typeof bus?.dispatchHostMessage === 'function') {
         bus.dispatchHostMessage({ type: 'codex-micro-insert-composer-text', text: action.text });
         return { ok: true, action: action.type };
@@ -1308,14 +1461,15 @@ export class CodexDesktopBridge {
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
   }
 
-  async evaluate(expression) {
+  async evaluate(expression, timeoutMs = this.requestTimeoutMs) {
     await this.ensureConnected();
     const id = ++this.nextId;
+    const effectiveTimeoutMs = Math.max(1, Number(timeoutMs) || this.requestTimeoutMs);
     const response = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error("Codex Desktop CDP request timed out."));
-      }, this.requestTimeoutMs);
+      }, effectiveTimeoutMs);
       this.pending.set(id, { resolve, reject, timer, raw: false });
     });
     this.socket.send(JSON.stringify({
@@ -1404,7 +1558,7 @@ export function selectCodexMainTarget(targets) {
     ?? candidates.find((target) => !auxiliary(target));
 }
 
-function buildRuntimeOverrideExpression() {
+export function buildRuntimeOverrideExpression() {
   return `(async () => {
     const gateName = ${JSON.stringify(MICRO_GATE)};
     const statsig = globalThis.__STATSIG__;
@@ -1443,18 +1597,96 @@ function buildRuntimeOverrideExpression() {
         persisted.b(${JSON.stringify(DETECTION_KEY)}, true);
         detected = Boolean(persisted.p(${JSON.stringify(DETECTION_KEY)}, false));
       }
+    } else {
+      // Newer Desktop bundles inline the persisted signal into app-initial or
+      // import its factory from app-shared. Resolve the exact factory module
+      // and its getter/setter exports, then fail closed on ambiguity.
+      const appUrl = urls.find((url) => url.includes('/assets/app-initial-'));
+      if (!appUrl) return { ready: false, reason: 'micro-persistence-module-unavailable' };
+      const cacheKey = '__hermesControlMicroBundleV3';
+      let contract = globalThis[cacheKey];
+      if (contract?.url !== appUrl) {
+        const appSource = await (await fetch(appUrl)).text();
+        const key = ${JSON.stringify(DETECTION_KEY)};
+        const keyAt = appSource.indexOf(key);
+        if (keyAt < 0 || appSource.indexOf(key, keyAt + key.length) >= 0) {
+          return { ready: false, reason: 'micro-detection-key-ambiguous' };
+        }
+        const beforeKey = keyAt < 0 ? '' : appSource.slice(Math.max(0, keyAt - 100), keyAt);
+        const signalMatch = beforeKey.match(/([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\([^A-Za-z_$]{1,2}$/);
+        const factoryName = signalMatch?.[2];
+        let factoryUrl = appUrl;
+        let factorySource = appSource;
+        let factorySymbol = factoryName;
+        let factoryStart = factoryName ? appSource.indexOf('function ' + factoryName + '(') : -1;
+        if (factoryName && factoryStart < 0) {
+          const importPattern = /import\\s*\\{([^}]*)\\}\\s*from\\s*["']([^"']+)["']/g;
+          const imports = [];
+          let imported;
+          while ((imported = importPattern.exec(appSource))) {
+            for (const specifier of imported[1].split(',')) {
+              const parts = specifier.trim().split(/\\s+as\\s+/);
+              if ((parts[1] ?? parts[0]) === factoryName) {
+                imports.push({ exportName: parts[0], url: new URL(imported[2], appUrl).href });
+              }
+            }
+          }
+          if (imports.length !== 1) {
+            return { ready: false, reason: 'micro-persistence-factory-import-ambiguous' };
+          }
+          factoryUrl = imports[0].url;
+          factorySource = await (await fetch(factoryUrl)).text();
+          const factoryExportStart = factorySource.lastIndexOf('export{');
+          const factoryExportEnd = factoryExportStart < 0 ? -1 : factorySource.indexOf('}', factoryExportStart + 7);
+          const factoryExports = factoryExportEnd < 0 ? '' : factorySource.slice(factoryExportStart + 7, factoryExportEnd);
+          const symbols = factoryExports.split(',')
+            .map((part) => part.trim().match(/^([A-Za-z_$][\\w$]*) as ([A-Za-z_$][\\w$]*)$/))
+            .filter((match) => match?.[2] === imports[0].exportName)
+            .map((match) => match[1]);
+          if (symbols.length !== 1) {
+            return { ready: false, reason: 'micro-persistence-factory-export-ambiguous' };
+          }
+          factorySymbol = symbols[0];
+          factoryStart = factorySource.indexOf('function ' + factorySymbol + '(');
+        }
+        const factory = factoryStart < 0 ? '' : factorySource.slice(factoryStart, factoryStart + 1800);
+        const setterName = factory.match(/publishDelayMs==null\\?([A-Za-z_$][\\w$]*)\\(/)?.[1];
+        const getterName = factory.match(/let [A-Za-z_$][\\w$]*=([A-Za-z_$][\\w$]*)\\(e,t\\)/)?.[1];
+        const exportStart = factorySource.lastIndexOf('export{');
+        const exportEnd = exportStart < 0 ? -1 : factorySource.indexOf('}', exportStart + 7);
+        const exported = exportEnd < 0 ? '' : factorySource.slice(exportStart + 7, exportEnd);
+        const exportName = (symbol) => exported.split(',')
+          .map((part) => part.trim().match(/^([A-Za-z_$][\\w$]*) as ([A-Za-z_$][\\w$]*)$/))
+          .filter((match) => match?.[1] === symbol)
+          .map((match) => match[2]);
+        const setters = setterName ? exportName(setterName) : [];
+        const getters = getterName ? exportName(getterName) : [];
+        if (setters.length !== 1 || getters.length !== 1) {
+          return { ready: false, reason: 'micro-persistence-contract-changed' };
+        }
+        contract = { url: appUrl, factoryUrl, setter: setters[0], getter: getters[0] };
+        globalThis[cacheKey] = contract;
+      }
+      const persistence = await import(contract.factoryUrl ?? appUrl);
+      if (typeof persistence[contract.setter] !== 'function' || typeof persistence[contract.getter] !== 'function') {
+        return { ready: false, reason: 'micro-persistence-exports-unavailable' };
+      }
+      persistence[contract.setter](${JSON.stringify(DETECTION_KEY)}, true);
+      detected = persistence[contract.getter](${JSON.stringify(DETECTION_KEY)}, false) === true;
     }
     for (const client of clients) client.$emt?.({ name: 'values_updated' });
-    const likely = urls.filter((url) => /(?:vscode-api|codex-micro|app-initial|artifact-tab-content)/.test(url)).slice(0, 120);
+    const likely = urls.filter((url) => /(?:vscode-api|codex-micro|app-initial|app-shared|artifact-tab-content)/.test(url)).slice(0, 120);
     let bus = null;
     for (const url of likely) {
       try {
         const module = await import(url);
-        bus = Object.values(module).find((candidate) =>
+        const candidate = Object.values(module).find((candidate) =>
           candidate && typeof candidate === 'object' &&
-          (typeof candidate.dispatchHostMessage === 'function' || typeof candidate.dispatchMessage === 'function')
-        ) ?? bus;
-        if (bus?.handlers instanceof Map && (bus.handlers.get('codex-micro-device-state-changed')?.size ?? 0) > 0) break;
+          (typeof candidate.dispatchHostMessage === 'function' || typeof candidate.dispatchMessage === 'function') &&
+          candidate.handlers instanceof Map &&
+          (candidate.handlers.get('codex-micro-device-state-changed')?.size ?? 0) > 0
+        );
+        if (candidate) { bus = candidate; break; }
       } catch {}
     }
     if (bus) {
@@ -1464,8 +1696,14 @@ function buildRuntimeOverrideExpression() {
     const hidHandlers = bus?.handlers instanceof Map ? (bus.handlers.get('codex-micro-hid-event')?.size ?? 0) : 0;
     const joystickHandlers = bus?.handlers instanceof Map ? (bus.handlers.get('codex-micro-joystick-event')?.size ?? 0) : 0;
     const enabled = clients.map((client) => Boolean(client.checkGate?.(gateName)));
+    const ready = enabled.every(Boolean) && detected === true && Boolean(bus) && hidHandlers > 0;
     return {
-      ready: enabled.every(Boolean) && Boolean(bus) && hidHandlers > 0,
+      ready,
+      reason: ready ? undefined : !enabled.every(Boolean)
+        ? 'micro-gate-unavailable'
+        : detected !== true ? 'micro-detection-unavailable'
+        : !bus ? 'micro-event-bus-unavailable'
+        : 'micro-hid-handlers-unavailable',
       enabled,
       detected,
       nativeEventBus: Boolean(bus),
@@ -1523,11 +1761,20 @@ function buildSnapshotExpression() {
     const commandState = window[commandStateKey];
     if (!Number.isFinite(commandState.approvalChangedAt)) commandState.approvalChangedAt = 0;
     const normalizeThreadKey = (value) => String(value ?? '').replace(/^local:/, '');
+    const activeComposerMarker = [...document.querySelectorAll('[data-above-composer-conversation-id]')]
+      .find((element) => {
+        const container = element.parentElement ?? element;
+        const rect = container.getBoundingClientRect();
+        const style = getComputedStyle(container);
+        return rect.width > 0 && rect.height > 0
+          && style.display !== 'none'
+          && style.visibility !== 'hidden';
+      });
     const activeElement =
       document.querySelector('[data-app-action-sidebar-thread-id][data-app-action-sidebar-thread-active="true"]')
       ?? document.querySelector('[data-app-action-sidebar-thread-id][aria-current="page"]');
     const activeThreadKey = normalizeThreadKey(
-      document.querySelector('[data-above-composer-conversation-id]')?.getAttribute('data-above-composer-conversation-id')
+      activeComposerMarker?.getAttribute('data-above-composer-conversation-id')
       ?? activeElement?.getAttribute('data-app-action-sidebar-thread-id')
       ?? undefined
     );
@@ -1559,6 +1806,15 @@ function buildSnapshotExpression() {
       conversations.find((item) => item.threadKey === activeThreadKey)?.title
       ?? (activeElement?.getAttribute('aria-label') ?? activeElement?.textContent ?? '').trim().slice(0, 240)
       ?? undefined;
+    const activeResponse = [...document.querySelectorAll('[data-response-annotation-conversation]')]
+      .filter((element) => normalizeThreadKey(element.getAttribute('data-response-annotation-conversation')) === activeThreadKey)
+      .at(-1);
+    const turnId = activeResponse
+      ?.closest('[data-content-search-turn-key]')
+      ?.getAttribute('data-content-search-turn-key') ?? undefined;
+    const assistantText = activeResponse
+      ?.querySelector('[class*="MarkdownRoot"]')
+      ?.innerText?.trim() ?? undefined;
     const isVisible = (element) => {
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
@@ -1572,10 +1828,10 @@ function buildSnapshotExpression() {
     ].filter(Boolean).join(' ').trim().replace(/\\s+/g, ' ').toLowerCase();
     const approvalLabels = visibleControls.map(controlLabel);
     const hasAllow = approvalLabels.some((label) =>
-      /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)(?:\s*(?:enter|return|⏎|↵))?$/i.test(label)
+      /^(allow|allow once|approve|approve once|zezwól|zezwol|zezwól raz|zezwol raz|zatwierdź|zatwierdz)(?:\\s*(?:enter|return|⏎|↵))?$/i.test(label)
     );
     const hasDeny = approvalLabels.some((label) =>
-      /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)(?:\s*(?:esc|escape))?$/i.test(label)
+      /^(deny|reject|decline|odmów|odmow|odrzuć|odrzuc)(?:\\s*(?:esc|escape))?$/i.test(label)
     );
     const registryHasApproval = Boolean(commandState.approve && commandState.decline);
     const commandApproval = registryHasApproval;
@@ -1584,7 +1840,7 @@ function buildSnapshotExpression() {
       const label = controlLabel(element);
       return /(^|\\s)(stop|interrupt|cancel generation|stop generating|zatrzymaj|przerwij|anuluj)(\\s|$)/i.test(label);
     });
-    const reasoningTrigger = document.querySelector('[data-selected-reasoning-effort]');
+    const reasoningTrigger = [...document.querySelectorAll('[data-selected-reasoning-effort]')].find(isVisible);
     const reasoning = reasoningTrigger?.getAttribute('data-selected-reasoning-effort') ?? undefined;
     const model = [...(reasoningTrigger?.querySelectorAll('[class*="ModelPickerTriggerModelText"]') ?? [])]
       .find(isVisible)?.textContent?.trim() ?? undefined;
@@ -1592,6 +1848,8 @@ function buildSnapshotExpression() {
       activeThreadKey,
       activeSidebarThreadKey,
       activeThreadTitle,
+      turnId,
+      assistantText,
       conversations,
       working,
       waitingApproval,

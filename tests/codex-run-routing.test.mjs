@@ -42,13 +42,15 @@ test("composer readiness requires the requested thread and two stable visible co
   await assert.rejects(bridge.waitForComposerThread(""), /composer session id is required/);
 });
 
-test("RUN uses the composer-submit HID and retries transient snapshot races", async () => {
+test("RUN uses the registered composer submit command and retries transient snapshot races", async () => {
   const bridge = Object.create(CodexDesktopBridge.prototype);
   let snapshots = 0;
-  const hid = [];
+  const submits = [];
   bridge.waitForComposerThread = async (id) => assert.equal(id, "thread-run");
   bridge.enableMicroRuntime = async () => ({ ready: true });
-  bridge.sendHid = async (key, act) => hid.push({ key, act });
+  bridge.readVisibleComposerText = async () => "queued prompt";
+  bridge.submitComposer = async (text) => submits.push(text);
+  bridge.composerContainsText = async () => false;
   bridge.snapshot = async () => {
     snapshots += 1;
     if (snapshots < 3) throw new Error("Promise was collected");
@@ -57,37 +59,36 @@ test("RUN uses the composer-submit HID and retries transient snapshot races", as
 
   const result = await bridge.continueTask("thread-run");
   assert.equal(snapshots, 3);
-  assert.deepEqual(hid, [{ key: "ACT12", act: 1 }, { key: "ACT12", act: 0 }]);
+  assert.deepEqual(submits, ["queued prompt"]);
   assert.equal(result.working, false);
+  assert.equal(result.metadata.submitted, true);
 });
 
-test("RUN never emits HID before composer readiness", async () => {
+test("RUN never submits before composer readiness", async () => {
   const bridge = Object.create(CodexDesktopBridge.prototype);
-  let hid = false;
+  let submitted = false;
   bridge.waitForComposerThread = async () => { throw new Error("selected composer unavailable"); };
   bridge.enableMicroRuntime = async () => ({ ready: true });
-  bridge.sendHid = async () => { hid = true; };
+  bridge.submitComposer = async () => { submitted = true; };
   await assert.rejects(bridge.continueTask("thread-run"), /selected composer unavailable/);
-  assert.equal(hid, false);
+  assert.equal(submitted, false);
 });
 
-test("RUN reports a release failure without taking a success snapshot", async () => {
+test("RUN reports a submit failure without taking a success snapshot", async () => {
   const bridge = Object.create(CodexDesktopBridge.prototype);
-  let calls = 0;
+  let submits = 0;
   let snapshots = 0;
   bridge.waitForComposerThread = async () => ({ threadKey: "thread-run" });
   bridge.enableMicroRuntime = async () => ({ ready: true });
-  bridge.sendHid = async () => {
-    calls += 1;
-    if (calls === 2) throw new Error("release failed");
-  };
+  bridge.readVisibleComposerText = async () => "queued prompt";
+  bridge.submitComposer = async () => { submits += 1; throw new Error("submit failed"); };
   bridge.snapshot = async () => { snapshots += 1; return {}; };
-  await assert.rejects(bridge.continueTask("thread-run"), /release failed/);
-  assert.equal(calls, 2);
+  await assert.rejects(bridge.continueTask("thread-run"), /submit failed/);
+  assert.equal(submits, 1);
   assert.equal(snapshots, 0);
 });
 
-test("RUN uses the proven HID path and keycap lookup fails closed", () => {
+test("RUN uses the registered submit path and keycap lookup fails closed", () => {
   const source = fs.readFileSync(
     new URL("../apps/server/src/experimental/codex-desktop/CodexDesktopBridge.mjs", import.meta.url),
     "utf8"
@@ -95,8 +96,9 @@ test("RUN uses the proven HID path and keycap lookup fails closed", () => {
   const continueStart = source.indexOf("  async continueTask(");
   const continueEnd = source.indexOf("\n  async stop()", continueStart);
   const continueBody = source.slice(continueStart, continueEnd);
-  assert.match(continueBody, /sendHid\(ACTION_KEYS\.send, 1\)/);
-  assert.match(continueBody, /sendHid\(ACTION_KEYS\.send, 0\)/);
+  assert.match(continueBody, /readVisibleComposerText\(\)/);
+  assert.match(continueBody, /submitComposer\(composerText\)/);
+  assert.doesNotMatch(continueBody, /sendHid\(/);
   assert.doesNotMatch(continueBody, /runKeycap\("RUN"\)/);
 
   const keycapStart = source.indexOf("  async runKeycap(");

@@ -10,6 +10,7 @@ This file intentionally records only what the repository can establish.
 | Hermes approval bridge | Optional and disabled by default. Requires plugin hooks and `resolve_gateway_approval`; interactive CLI remote approval additionally requires compatible upstream `HERMES_CLI_REMOTE_APPROVAL` handling. |
 | Hermes OS Cat deployment | Optional private compatibility target only. It is not required, bundled, or treated as the public default. |
 | Codex CLI | Requires `exec --json` JSONL behavior and the supported approval stdin contract. Exact minimum version must be verified with a fixture. |
+| Codex Desktop experiment | Disabled by default. Bundle contracts were compared with MSIX `26.928.2636.0` / app `26.928.21956`; physical E2E is still required after every update. |
 | Windows | Process-tree cleanup uses `taskkill.exe`; test on every supported Windows release. |
 | Linux/macOS | CLI process cleanup path exists but requires platform CI before support is claimed. |
 | Mobile browser/PWA | Static shell and SSE client are present; authenticated mobile smoke test is required before release. |

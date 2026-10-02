@@ -7,6 +7,12 @@ protections do not make the renderer contract stable; repeat physical E2E
 checks after every Codex Desktop update. See
 `CODEX_UPDATE_HARDENING.md` and `PATCH_05_EXPERIMENTAL_DESKTOP.md`.
 
+The current compatibility follow-up reflects contracts observed in Codex
+Desktop MSIX `26.928.2636.0` (internal version `26.928.21956`). It uses the
+registered `CODEX` / `composer.submit` command path and supports the split
+`app-initial` / `app-shared` Micro persistence layout. Treat this as a tested
+snapshot, not a compatibility guarantee.
+
 ## Status and disclaimer
 
 This integration is **Windows-only, experimental, unofficial, and
