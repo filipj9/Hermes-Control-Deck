@@ -9,8 +9,8 @@ export class HermesApiClient {
     this.loggedIn = false;
   }
 
-  async health() {
-    return this.request("/health", { auth: false });
+  async health(options = {}) {
+    return this.request("/health", { ...options, auth: false });
   }
 
   async authStatus() {
@@ -143,13 +143,24 @@ export class HermesApiClient {
 
   async fetchWithTimeout(url, options) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || this.timeoutMs);
+    const timeoutMs = options.timeoutMs || this.timeoutMs;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       return await fetch(url, {
         ...withoutTimeoutOption(options),
         signal: controller.signal
       });
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === "AbortError") {
+        const timeoutError = new Error(`Hermes request timed out after ${timeoutMs}ms.`);
+        timeoutError.code = "HERMES_TIMEOUT";
+        throw timeoutError;
+      }
+      const causeCode = String(error?.cause?.code || error?.code || "").trim();
+      const requestError = new Error(`Hermes request failed${causeCode ? ` (${causeCode})` : ""}.`);
+      requestError.code = causeCode || "HERMES_FETCH_FAILED";
+      throw requestError;
     } finally {
       clearTimeout(timeout);
     }

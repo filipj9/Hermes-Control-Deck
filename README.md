@@ -314,6 +314,7 @@ is in [.env.example](.env.example). The most important values are:
 | `CONTROL_ALLOWED_ORIGINS` | Explicit comma-separated browser origins |
 | `CONTROL_TRUSTED_HOSTS` | Explicit custom hostnames accepted behind a user-managed proxy |
 | `HERMES_BASE_URL` | External Hermes WebUI base URL |
+| `HERMES_HEALTH_TIMEOUT_MS` | Bounded Hermes health probe timeout, default 1500 ms |
 | `HERMES_PASSWORD` | Hermes WebUI password, kept in process memory |
 | `HERMES_API_PREFIX` | Hermes API prefix, default `/api` |
 | `HERMES_CHAT_START_TIMEOUT_MS` | Identity window for a slow Hermes chat start, default 30000 ms |

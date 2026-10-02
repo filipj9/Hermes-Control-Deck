@@ -55,6 +55,7 @@ export function loadConfig(projectRoot) {
       profile: env.HERMES_PROFILE || "default",
       model: env.HERMES_MODEL || "",
       timeoutMs: numberFrom(env.HERMES_TIMEOUT_MS, 3500),
+      healthTimeoutMs: numberFrom(env.HERMES_HEALTH_TIMEOUT_MS, 1500),
       chatStartTimeoutMs: numberFrom(env.HERMES_CHAT_START_TIMEOUT_MS, 30000),
       streamTimeoutMs: numberFrom(env.HERMES_STREAM_TIMEOUT_MS, 0),
       streamReconnectAttempts: numberFrom(env.HERMES_STREAM_RECONNECT_ATTEMPTS, 3),

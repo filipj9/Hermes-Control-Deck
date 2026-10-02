@@ -1511,7 +1511,7 @@ function agentSignal(source) {
   const runtime = state.runtimes.find((item) => item.source === source);
   const runtimeReady = isRuntimeReady(runtime);
   if (runtime && !runtimeReady) {
-    const detail = "offline";
+    const detail = compactLogText(runtime.details?.error || "offline");
     return { status: "error", label: "ERROR", detail, unread: true };
   }
   if (runtimeReady && (!saved.status || saved.status === "idle")) {
@@ -3190,7 +3190,8 @@ function compactLogText(value) {
   const activityLabel = activityLabels[text.toLowerCase()];
   if (activityLabel) return activityLabel;
   if (text.includes("Hermes password missing")) return "auth required";
-  if (text.includes("fetch failed")) return "link failed";
+  if (/Hermes request timed out/i.test(text)) return "remote timeout";
+  if (/fetch failed|Hermes request failed|ECONNREFUSED|UND_ERR_CONNECT_TIMEOUT/i.test(text)) return "remote offline";
   if (text.includes("No pending")) return "no pending approval";
   if (text.includes("Prompt is empty")) return "prompt empty";
   return text.slice(0, 72);

@@ -17,6 +17,7 @@ Configuration is read from `.env` and process environment. Never commit `.env`.
 | `CONTROL_MAX_BODY_BYTES` | no | request body cap |
 | `CONTROL_RATE_LIMIT_MAX` | no | requests per rate window and source |
 | `HERMES_BASE_URL` | yes when enabled | user-owned Hermes WebUI URL |
+| `HERMES_HEALTH_TIMEOUT_MS` | no | bounded health probe timeout; default 1500 ms |
 | `HERMES_PASSWORD` | yes for password auth | kept in process memory only |
 | `HERMES_API_PREFIX` | no | default `/api` |
 | `HERMES_CHAT_START_TIMEOUT_MS` | no | slow chat-start identity window; default 30000 ms |

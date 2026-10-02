@@ -6,6 +6,7 @@ const DEFAULT_EXTERNAL_SESSION_LIMIT = 50;
 const DEFAULT_EXTERNAL_SESSION_REFRESH_MS = 2000;
 const DEFAULT_EXTERNAL_APPROVAL_POLL_MS = 2500;
 const HERMES_STALE_ACTIVE_TASK_GRACE_MS = 60_000;
+const DEFAULT_HERMES_HEALTH_TIMEOUT_MS = 1500;
 
 export class HermesRuntimeAdapter {
   constructor(config, eventBus, options = {}) {
@@ -31,6 +32,10 @@ export class HermesRuntimeAdapter {
     this.hermesWsLastErrorAt = 0;
     this.streamReconnectAttempts = nonNegativeInteger(config.streamReconnectAttempts, 3);
     this.streamReconnectBackoffMs = nonNegativeInteger(config.streamReconnectBackoffMs, 250);
+    this.healthTimeoutMs = Math.min(
+      positiveInteger(config.healthTimeoutMs, DEFAULT_HERMES_HEALTH_TIMEOUT_MS),
+      positiveInteger(config.timeoutMs, DEFAULT_HERMES_HEALTH_TIMEOUT_MS)
+    );
     this.bridgeReceiver = options.bridgeReceiver;
     this.wsObservationPromise = undefined;
     this.wsObservedSessionId = undefined;
@@ -64,7 +69,28 @@ export class HermesRuntimeAdapter {
   }
 
   async health() {
-    const data = await this.client.health();
+    let data;
+    try {
+      data = await this.client.health({ timeoutMs: this.healthTimeoutMs });
+    } catch (error) {
+      const message = String(error?.message || "Hermes remote health is unavailable.").slice(0, 300);
+      return {
+        source: this.source,
+        ok: false,
+        status: "offline",
+        details: {
+          status: "offline",
+          error: message,
+          remote: { connected: false },
+          capabilities: this.capabilities(),
+          control: {
+            bridge: this.bridgeReceiver?.health?.() || null,
+            externalApproval: this.externalApprovalDiagnostics(),
+            websocket: this.wsDiagnostics()
+          }
+        }
+      };
+    }
     if (this.wsClient?.isConfigured?.() && stripHermesPrefix(this.config.ws?.sessionId)) {
       this.observeConfiguredWsSession().catch((error) => this.recordHermesWsError(error));
     }
