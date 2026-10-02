@@ -75,7 +75,7 @@ This repository is an alpha release candidate: **v0.1.0-alpha**.
 
 The current public tree has been checked with:
 
-- **161/161** automated tests passing in the isolated release staging tree;
+- **164/164** automated tests passing in the isolated release staging tree;
 - **20/20** JavaScript syntax checks passing for the application check list;
 - local API smoke checks for health, runtimes, agents, tasks, sessions,
   approvals, and events;

@@ -12,8 +12,8 @@ the production installation.
 The local public branch is ready for owner review as an alpha patch candidate.
 
 - JavaScript syntax checks: **20/20 passed**.
-- Automated tests: **161/161 passed**.
-- Focused Codex Desktop lifecycle and routing tests: **31/31 passed**.
+- Automated tests: **164/164 passed**.
+- Focused Codex Desktop lifecycle and routing tests: **34/34 passed**.
 - CLI-first boundary tests: **4/4 passed**.
 - `git diff --check`: **passed**.
 - The optional Desktop add-on remains disabled by default and quarantined from
@@ -34,6 +34,8 @@ The candidate adds three independent fixes:
    the registered `CODEX` / `composer.submit` path.
 3. Background Desktop tasks retain the correct RUN, STOP, DENY, ALLOW and
    terminal state when another conversation is selected.
+4. Composer readiness stays bound to the selected conversation when an editor,
+   browser or another text panel is also visible.
 
 The public implementation does not contain the private launcher, production
 ports, deployment scripts, credentials, logs, backups, or runtime state. It

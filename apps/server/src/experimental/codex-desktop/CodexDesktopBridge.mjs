@@ -1134,6 +1134,10 @@ export class CodexDesktopBridge {
               marker?.getAttribute('data-above-composer-conversation-id')
             );
             if (active !== expected) return null;
+            const composerRoot = marker?.closest?.(
+              'form[data-thread-find-composer="true"], form[data-composer-placement], form'
+            ) ?? marker?.parentElement;
+            if (!composerRoot) return null;
             const visible = (element) => {
               const rect = element.getBoundingClientRect();
               const style = getComputedStyle(element);
@@ -1143,7 +1147,7 @@ export class CodexDesktopBridge {
                 && !element.disabled
                 && element.getAttribute('aria-disabled') !== 'true';
             };
-            const composers = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+            const composers = [...composerRoot.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
               .filter(visible);
             return composers.length === 1 ? { threadKey: active, composerCount: 1 } : null;
           })()`);

@@ -17,6 +17,8 @@ the default.
 - Reasoning remains tied to the explicitly selected conversation.
 - Session observation reads the requested background conversation and keeps
   STOP, denied approvals and terminal results authoritative.
+- Composer readiness searches only inside the selected conversation form, so
+  visible editors and browser side panels cannot cause a false timeout.
 
 ## Public boundary
 
@@ -30,8 +32,8 @@ CDP endpoint managed by the user.
 The isolated candidate passed:
 
 - 20/20 JavaScript syntax checks;
-- 161/161 repository tests;
-- 31/31 focused Desktop lifecycle, routing and public-boundary tests.
+- 164/164 repository tests;
+- 34/34 focused Desktop lifecycle, routing and public-boundary tests.
 
 Repeat physical NEW, session selection, reasoning, empty RUN, prompted RUN,
 PROMPT, STOP, approval allow and approval deny checks after every Codex Desktop
