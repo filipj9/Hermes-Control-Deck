@@ -17,7 +17,7 @@ const oldBusUrl = "app://-/assets/vscode-api-synthetic.js";
 
 class DispatchHarness extends CodexDesktopBridge {
   constructor(context) {
-    super({ desktopCdpPort: 4249 });
+    super({ desktopCdpPort: 4248 });
     this.context = context;
   }
 
@@ -224,7 +224,7 @@ test("unknown persistence exports and missing HID handlers fail closed", async (
 });
 
 test("reasoning retries only the initial slider opening before sending one key", async () => {
-  const bridge = new CodexDesktopBridge({ desktopCdpPort: 4249 });
+  const bridge = new CodexDesktopBridge({ desktopCdpPort: 4248 });
   let triggerReads = 0;
   let sliderWaits = 0;
   let clicks = 0;
