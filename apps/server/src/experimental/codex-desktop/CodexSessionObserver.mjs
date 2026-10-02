@@ -23,6 +23,7 @@ export class CodexSessionObserver {
     this.approvalStates = new Map();
     this.lastApprovalScanAt = 0;
     this.pendingApprovals = [];
+    this.threadObservers = new Map();
     this.snapshotValue = emptySnapshot();
   }
 
@@ -49,6 +50,43 @@ export class CodexSessionObserver {
       this.snapshotValue.approvalCallId = activeApproval.callId;
     }
     return { ...this.snapshotValue };
+  }
+
+  snapshotForThread(threadId) {
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!normalizedThreadId) return undefined;
+    let observer = this.threadObservers.get(normalizedThreadId);
+    if (!observer?.filePath || !fs.existsSync(observer.filePath)) {
+      const session = sessionFileForThread(this.sessionsRoot, normalizedThreadId);
+      if (!session) return undefined;
+      observer = new CodexSessionObserver({ codexHome: path.dirname(this.sessionsRoot) });
+      observer.filePath = session.filePath;
+      observer.offset = Math.max(0, session.size - INITIAL_TAIL_BYTES);
+      observer.partial = "";
+      observer.snapshotValue = {
+        ...emptySnapshot(),
+        threadId: normalizedThreadId,
+        title: "Codex Desktop task",
+        updatedAt: session.mtime.toISOString()
+      };
+      this.threadObservers.set(normalizedThreadId, observer);
+      while (this.threadObservers.size > APPROVAL_SESSION_LIMIT) {
+        this.threadObservers.delete(this.threadObservers.keys().next().value);
+      }
+    }
+    observer.readUpdates();
+    const pendingApprovals = this.pendingApprovals
+      .filter((approval) => approval.threadId === normalizedThreadId)
+      .map((approval) => ({ ...approval }));
+    const snapshot = { ...observer.snapshotValue, pendingApprovals };
+    const activeApproval = pendingApprovals[0];
+    if (activeApproval) {
+      snapshot.waitingApproval = true;
+      snapshot.detail = "Waiting for approval";
+      snapshot.approvalDetection = activeApproval.approvalDetection;
+      snapshot.approvalCallId = activeApproval.callId;
+    }
+    return snapshot;
   }
 
   selectLatestSession() {
@@ -371,6 +409,35 @@ function newestSessionFiles(root, limit, options = {}) {
   }
   sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return sessions.slice(0, limit);
+}
+
+function sessionFileForThread(root, threadId) {
+  if (!fs.existsSync(root)) return undefined;
+  const suffix = `${threadId}.jsonl`.toLowerCase();
+  const pending = [root];
+  let match;
+  while (pending.length) {
+    const current = pending.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const filePath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(filePath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(suffix)) continue;
+      const stats = fs.statSync(filePath);
+      if (!match || stats.mtimeMs > match.mtimeMs) {
+        match = { filePath, size: stats.size, mtime: stats.mtime, mtimeMs: stats.mtimeMs };
+      }
+    }
+  }
+  return match;
 }
 
 function ingestApprovalLine(state, line) {

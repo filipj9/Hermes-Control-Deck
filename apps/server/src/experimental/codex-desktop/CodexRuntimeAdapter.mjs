@@ -3,6 +3,8 @@ import { CodexDesktopBridge } from "./CodexDesktopBridge.mjs";
 import { toCodexAgents, toCodexApprovals, toCodexConversations, toCodexTasks } from "./CodexEventMapper.mjs";
 import { CodexSessionObserver } from "./CodexSessionObserver.mjs";
 
+const DESKTOP_UNBOUND_TASK_TIMEOUT_MS = 120_000;
+
 export class CodexRuntimeAdapter {
   constructor(config, eventBus) {
     this.source = "codex";
@@ -35,6 +37,7 @@ export class CodexRuntimeAdapter {
     this.latestSessionObserverSnapshot = undefined;
     this.desktopBridgeReady = false;
     this.desktopBridgeLastState = undefined;
+    this.desktopOpenInFlight = undefined;
     this.desktopNewTaskDrafts = new Map();
     this.desktopIdleObservations = new Map();
     this.desktopBridgeOfflineReported = false;
@@ -334,11 +337,16 @@ export class CodexRuntimeAdapter {
   }
 
   async cancelTask(taskId) {
+    const requestedTask = taskId ? this.tasks.find((item) => item.id === taskId) : undefined;
+    if (requestedTask && isTerminalTaskStatus(requestedTask.status)) return requestedTask;
+
     const appTask = this.findAppServerTask(taskId);
     if (appTask) return this.cancelAppServerTask(appTask.id);
 
     if (this.cli) {
-      const task = this.tasks.find((item) => item.id === taskId) || this.tasks.find((item) => item.status === "running");
+      const task = taskId
+        ? requestedTask
+        : this.tasks.find((item) => ["running", "queued", "waiting_approval"].includes(item.status));
       if (!task) return { ok: true, message: "No Codex task to stop." };
       const stopped = this.cli.stop(task.id);
       task.status = "cancelled";
@@ -388,6 +396,7 @@ export class CodexRuntimeAdapter {
         conversationId: input.conversationId,
         resumeLast: input.resumeLast,
         clientId: input.clientId,
+        requestId: input.requestId,
         reasoning: input.reasoning,
         approvalPolicy: input.approvalPolicy
       })).message;
@@ -683,7 +692,7 @@ export class CodexRuntimeAdapter {
     if (this.desktopBridge?.isConnected()) return;
     throw new Error(
       "Codex Desktop is not controllable because the native CDP bridge is disconnected. "
-      + "Expose a user-managed loopback CDP endpoint, then retry."
+      + "Start Codex Desktop through the configured bridge launcher and retry."
     );
   }
 
@@ -699,18 +708,20 @@ export class CodexRuntimeAdapter {
       if (!threadKey) throw new Error("Codex Desktop session id is required.");
       await this.ensureDesktopBridgeReady();
       await this.desktopBridge.activateThread(threadKey);
+      this.desktopNewTaskDrafts.delete(desktopDraftKey(payload.clientId));
       this.selectedAppThreadId = threadKey;
       this.activeAppThreadId = threadKey;
       return this.refreshDesktopConversations();
     }
     if (action === "events") return this.eventBus.list(50).filter((event) => event.source === this.source);
+    if (action === "workspace") return this.openDesktopWorkspace();
     await this.ensureDesktopBridgeReady();
-    if (action === "workspace") return this.desktopBridge.health();
     if (action === "new-task") {
-      await this.desktopBridge.createNewTask();
+      const newSnapshot = await this.desktopBridge.createNewTask();
       this.selectedAppThreadId = undefined;
       this.desktopNewTaskDrafts.set(desktopDraftKey(payload.clientId), {
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        threadKey: newSnapshot?.activeThreadKey
       });
       if (!payload.prompt && !payload.title) return this.refreshDesktopConversations();
       return this.startTask({
@@ -723,19 +734,19 @@ export class CodexRuntimeAdapter {
     }
     if (action === "continue" || action === "send") {
       const content = payload.content || payload.prompt || payload.message || payload.title;
-        if (!content && action === "continue") {
-          const requestedThreadKey = stripDesktopConversationId(payload.conversationId);
-          if (!requestedThreadKey) throw new Error("Select a Codex Desktop session before RUN.");
-          await this.desktopBridge.activateThread(requestedThreadKey);
-          const snapshot = await this.desktopBridge.continueTask(requestedThreadKey);
-          if (!snapshot?.working && !snapshot?.waitingApproval) {
-            return {
-              ...snapshot,
-              metadata: { noop: true, reason: "desktop-run-remained-idle" }
-            };
-          }
-          return snapshot;
+      if (!content && action === "continue") {
+        const requestedThreadKey = stripDesktopConversationId(payload.conversationId);
+        if (!requestedThreadKey) throw new Error("Select a Codex Desktop session before RUN.");
+        await this.desktopBridge.activateThread(requestedThreadKey);
+        const snapshot = await this.desktopBridge.continueTask(requestedThreadKey);
+        if (!snapshot?.working && !snapshot?.waitingApproval && snapshot?.metadata?.submitted !== true) {
+          return {
+            ...snapshot,
+            metadata: { noop: true, reason: "desktop-run-remained-idle" }
+          };
         }
+        return snapshot;
+      }
       if (!content) throw new Error("Codex Desktop prompt is empty.");
       return this.sendMessage({
         ...payload,
@@ -784,62 +795,49 @@ export class CodexRuntimeAdapter {
     const requestedThreadKey = stripDesktopConversationId(input.conversationId);
     const draftKey = desktopDraftKey(input.clientId);
     const draft = this.desktopNewTaskDrafts.get(draftKey);
+    if (draft && Date.now() - draft.createdAt >= 120000) {
+      throw new Error("The new Codex task draft expired. Press NEW again before sending.");
+    }
     const pendingNewTask = Boolean(draft && Date.now() - draft.createdAt < 120000);
     const forceNewTask = input.resumeLast === false || pendingNewTask;
     if (input.resumeLast === false && !pendingNewTask) {
       await this.desktopBridge.createNewTask();
     }
     const before = await this.desktopBridge.snapshot();
+    if (pendingNewTask && String(before.activeThreadKey || "") !== String(draft.threadKey || "")) {
+      throw new Error("The new Codex composer is no longer active. Press NEW again before sending.");
+    }
     const targetThreadKey = forceNewTask
       ? undefined
       : requestedThreadKey || before.activeThreadKey;
-    let after;
-    try {
-      after = await this.desktopBridge.sendPrompt(content, {
-        threadKey: targetThreadKey
-      });
-    } finally {
-      this.desktopNewTaskDrafts.delete(draftKey);
-    }
-    const threadKey = after.activeThreadKey || targetThreadKey;
-    const now = new Date().toISOString();
-    const observedTask = this.tasks.find((item) =>
-      item.metadata?.nativeDesktop
-      && item.metadata?.observed
-      && item.metadata?.threadId === threadKey
-      && ["running", "queued", "waiting_approval"].includes(item.status)
-    );
-    const task = observedTask || {
-      id: `codex:desktop:${Date.now()}`,
+    const observerBaseline = this.captureSessionObserverBaseline();
+    const promptSubmittedAtMs = Date.now();
+    const submittedAtMs = Date.now();
+    const submittedAt = new Date(submittedAtMs).toISOString();
+    const task = {
+      id: `codex:desktop:${submittedAtMs}`,
       source: this.source,
       agentId: "codex:desktop",
-      createdAt: now
-    };
-    Object.assign(task, {
-      conversationId: threadKey ? `codex:desktop:${threadKey}` : undefined,
+      conversationId: targetThreadKey ? `codex:desktop:${targetThreadKey}` : undefined,
       title: (input.title || content).slice(0, 80),
       status: "running",
       progress: 10,
-      updatedAt: now,
+      createdAt: submittedAt,
+      updatedAt: submittedAt,
       metadata: {
         mode: "desktop",
         surface: "desktop",
-        threadId: threadKey,
+        threadId: targetThreadKey,
         prompt: content,
         reasoning: normalizeReasoning(input.reasoning),
         nativeDesktop: true,
-        submittedAtMs: Date.now(),
-        observedWorking: Boolean(after.working || after.waitingApproval)
+        observerBaseline,
+        promptSubmittedAtMs,
+        submittedAtMs,
+        observedWorking: false
       }
-    });
-    this.tasks = [
-      task,
-      ...this.tasks.filter((item) =>
-        item.id !== task.id
-        && !(item.metadata?.observed && item.metadata?.threadId === threadKey)
-      )
-    ].slice(0, 50);
-    this.activeAppThreadId = threadKey;
+    };
+    this.tasks = [task, ...this.tasks.filter((item) => item.id !== task.id)].slice(0, 50);
     this.eventBus.publish({
       source: this.source,
       type: "task.created",
@@ -848,6 +846,87 @@ export class CodexRuntimeAdapter {
       conversationId: task.conversationId,
       payload: task
     });
+    let after;
+    try {
+      after = await this.desktopBridge.sendPrompt(content, {
+        threadKey: targetThreadKey
+      });
+    } catch (error) {
+      const failedAt = new Date().toISOString();
+      task.status = "failed";
+      task.progress = 100;
+      task.updatedAt = failedAt;
+      task.metadata = {
+        ...task.metadata,
+        lastActivity: error.message,
+        lastEventType: "task.failed"
+      };
+      this.eventBus.publish({
+        source: this.source,
+        type: "task.failed",
+        taskId: task.id,
+        conversationId: task.conversationId,
+        payload: { status: "failed", surface: "desktop", nativeDesktop: true, error: error.message }
+      });
+      throw error;
+    } finally {
+      this.desktopNewTaskDrafts.delete(draftKey);
+    }
+    const threadKey = after.activeThreadKey || targetThreadKey;
+    const now = new Date().toISOString();
+    const observedDuplicate = this.tasks.find((item) =>
+      item !== task
+      && item.metadata?.nativeDesktop
+      && item.metadata?.observed
+      && item.metadata?.threadId === threadKey
+      && desktopObservationMatchesSubmission(task, {
+        threadId: threadKey,
+        turnId: item.metadata?.observedTurnId || item.metadata?.turnId,
+        activitySequence: item.metadata?.observedActivitySequence,
+        updatedAt: item.updatedAt
+      })
+    );
+    if (observedDuplicate) {
+      const duplicateAt = Date.parse(observedDuplicate.updatedAt || observedDuplicate.createdAt || "") || 0;
+      const taskAt = Date.parse(task.updatedAt || task.createdAt || "") || 0;
+      if (isTerminalTaskStatus(observedDuplicate.status) || duplicateAt >= taskAt) {
+        task.status = observedDuplicate.status;
+        task.progress = observedDuplicate.progress;
+        task.updatedAt = observedDuplicate.updatedAt || now;
+        task.title = observedDuplicate.title || task.title;
+        task.metadata = { ...task.metadata, ...observedDuplicate.metadata };
+      }
+      for (const approval of this.approvals) {
+        if (approval.taskId === observedDuplicate.id) approval.taskId = task.id;
+      }
+    }
+    if (threadKey) {
+      task.conversationId = `codex:desktop:${threadKey}`;
+      task.metadata.threadId = threadKey;
+      task.metadata.linkedFromUnboundSubmission = true;
+    }
+    task.metadata = {
+      ...task.metadata,
+      prompt: content,
+      reasoning: normalizeReasoning(input.reasoning),
+      observerBaseline,
+      promptSubmittedAtMs,
+      submittedAtMs,
+      observedWorking: Boolean(task.metadata?.observedWorking || after.working || after.waitingApproval)
+    };
+    if (!isTerminalTaskStatus(task.status)) {
+      task.status = after.waitingApproval ? "waiting_approval" : "running";
+      task.progress = Math.max(task.progress || 0, after.waitingApproval ? 55 : 10);
+      task.updatedAt = now;
+    }
+    this.tasks = [
+      task,
+      ...this.tasks.filter((item) =>
+        item.id !== task.id
+        && item !== observedDuplicate
+      )
+    ].slice(0, 50);
+    this.activeAppThreadId = threadKey;
     this.eventBus.publish({
       source: this.source,
       type: "conversation.message.created",
@@ -856,6 +935,8 @@ export class CodexRuntimeAdapter {
       payload: {
         role: "user",
         content,
+        clientId: input.clientId,
+        requestId: input.requestId,
         surface: "desktop",
         threadId: threadKey,
         nativeDesktop: true
@@ -915,6 +996,40 @@ export class CodexRuntimeAdapter {
     return this.desktopBridge.health();
   }
 
+  async openDesktopWorkspace() {
+    if (this.desktopOpenInFlight) return this.desktopOpenInFlight;
+
+    const operation = this.performDesktopWorkspaceOpen();
+    this.desktopOpenInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.desktopOpenInFlight === operation) this.desktopOpenInFlight = undefined;
+    }
+  }
+
+  async performDesktopWorkspaceOpen() {
+    const connectedAtStart = this.desktopBridge.isConnected();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const health = await this.desktopBridge.health();
+        return desktopWorkspaceResult(health, connectedAtStart
+          ? "already-connected"
+          : attempt === 0 ? "bridge-reconnected" : "bridge-recovered", false);
+      } catch (error) {
+        if (this.desktopBridge.isConnected() || !isDesktopBridgeUnavailableError(error)) throw error;
+        if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 160));
+      }
+    }
+
+    const health = await this.desktopBridge.launch();
+    if (!health?.ok || health.status !== "connected") {
+      throw new Error("Codex Desktop launcher completed without a healthy bridge.");
+    }
+    return desktopWorkspaceResult(health, "bridge-bootstrapped", true);
+  }
+
   async decideDesktopApproval(input) {
     const approved = input.decision === "approve";
     const requestedThreadKey = stripDesktopConversationId(input.conversationId);
@@ -956,16 +1071,47 @@ export class CodexRuntimeAdapter {
         threadId: snapshot.activeThreadKey
       }
     };
+    const matchedPending = this.approvals.find((item) =>
+      item.status === "pending" && item.metadata?.threadId === before.activeThreadKey
+    );
+    approval.taskId = matchedPending?.taskId;
     for (const item of this.approvals) {
       if (item.status !== "pending" || item.metadata?.threadId !== before.activeThreadKey) continue;
       item.status = approved ? "approved" : "rejected";
       item.resolvedAt = now;
       item.updatedAt = now;
     }
+    const task = matchedPending?.taskId
+      ? this.tasks.find((item) => item.id === matchedPending.taskId)
+      : this.tasks.find((item) =>
+          item.metadata?.threadId === before.activeThreadKey
+          && ["running", "queued", "waiting_approval", "completed"].includes(item.status)
+        );
+    if (task) {
+      if (!approved && ["running", "queued", "waiting_approval", "completed"].includes(task.status)) {
+        task.status = normalizeTaskStatus("blocked");
+        task.progress = 100;
+        task.updatedAt = now;
+        task.metadata = {
+          ...task.metadata,
+          lastActivity: "approval denied",
+          lastEventType: "approval.resolved"
+        };
+      } else if (approved && !isTerminalTaskStatus(task.status)) {
+        task.status = normalizeTaskStatus("running");
+        task.updatedAt = now;
+        task.metadata = {
+          ...task.metadata,
+          lastActivity: "approval approved - task continuing",
+          lastEventType: "approval.resolved"
+        };
+      }
+    }
     this.approvals = this.approvals.slice(0, 50);
     this.eventBus.publish({
       source: this.source,
       type: "approval.resolved",
+      taskId: task?.id,
       conversationId: approval.conversationId,
       payload: approval
     });
@@ -973,6 +1119,7 @@ export class CodexRuntimeAdapter {
   }
 
   syncDesktopTaskState(snapshot) {
+    this.expireUnboundDesktopTasks();
     // A native bridge snapshot without a thread key is not an idle snapshot.
     // The session observer may still have the authoritative live state, so
     // never expire approvals or complete a task from an uncorrelated sample.
@@ -1006,11 +1153,36 @@ export class CodexRuntimeAdapter {
         });
       }
     }
+    const unboundTask = this.unboundDesktopTaskForNativeSnapshot(snapshot);
+    if (unboundTask) {
+      unboundTask.conversationId = `codex:desktop:${snapshot.activeThreadKey}`;
+      unboundTask.metadata = {
+        ...unboundTask.metadata,
+        threadId: snapshot.activeThreadKey,
+        linkedFromUnboundSubmission: true
+      };
+    }
     let active = this.tasks.find((task) =>
-      task.metadata?.nativeDesktop
+      (task.metadata?.nativeDesktop || task.metadata?.sessionObserver)
       && (!snapshot.activeThreadKey || task.metadata?.threadId === snapshot.activeThreadKey)
       && ["running", "queued", "waiting_approval"].includes(task.status)
     );
+    const terminalForActiveThread = this.tasks.find((task) => {
+      if (task.metadata?.threadId !== snapshot.activeThreadKey || !isTerminalTaskStatus(task.status)) return false;
+      const taskTurnId = String(task.metadata?.observedTurnId || task.metadata?.turnId || "");
+      const snapshotTurnId = String(snapshot.turnId || "");
+      return !taskTurnId || !snapshotTurnId || taskTurnId === snapshotTurnId;
+    });
+    if (!active && terminalForActiveThread && (snapshot.working || snapshot.waitingApproval)) {
+      return;
+    }
+    if (
+      !active
+      && (snapshot.working || snapshot.waitingApproval)
+      && this.observerHasTerminalStateForThread(snapshot.activeThreadKey)
+    ) {
+      return;
+    }
     if (!active && (snapshot.working || snapshot.waitingApproval) && snapshot.activeThreadKey) {
       const now = new Date().toISOString();
       active = {
@@ -1042,6 +1214,15 @@ export class CodexRuntimeAdapter {
       });
     }
     if (!active) return;
+    if (!snapshot.working && !snapshot.waitingApproval && (snapshot.turnId || snapshot.assistantText)
+      && !active.metadata?.observerBaseline?.threadId) {
+      active.metadata = {
+        ...active.metadata,
+        turnId: snapshot.turnId || active.metadata?.turnId,
+        observedTurnId: snapshot.turnId || active.metadata?.observedTurnId,
+        observedAssistantText: snapshot.assistantText || active.metadata?.observedAssistantText
+      };
+    }
     if (snapshot.working || snapshot.waitingApproval) {
       active.metadata = {
         ...active.metadata,
@@ -1107,16 +1288,21 @@ export class CodexRuntimeAdapter {
     const observer = this.latestSessionObserverSnapshot;
     const observerManagedTurn = Boolean(
       (this.sessionObserver || observer)
-      && (active.metadata?.sessionObserver || active.metadata?.observedTurnId)
+      && (active.metadata?.sessionObserver || active.metadata?.observedTurnId || active.metadata?.observerBaseline?.threadId)
     );
     const activeTurnId = String(active.metadata?.observedTurnId || active.metadata?.turnId || "");
     const observerTurnId = String(observer?.turnId || "");
+    const normalizedObserverTerminalStatus = normalizeTaskStatus(observer?.terminalStatus);
+    const observerTerminalStatus = isTerminalTaskStatus(normalizedObserverTerminalStatus)
+      ? normalizedObserverTerminalStatus
+      : "completed";
     const observerConfirmsTerminal = Boolean(
       observer?.threadId === snapshot.activeThreadKey
       && observer.hasTurnState === true
       && observer.working === false
       && observer.waitingApproval !== true
       && (!activeTurnId || !observerTurnId || activeTurnId === observerTurnId)
+      && (!active.metadata?.observerBaseline?.threadId || desktopObservationMatchesSubmission(active, observer))
     );
     const confirmedIdle = observerManagedTurn
       ? observerConfirmsTerminal
@@ -1126,15 +1312,23 @@ export class CodexRuntimeAdapter {
       : snapshot.working || stillStarting
         ? "running"
         : confirmedIdle
-          ? "completed"
+          ? observerManagedTurn ? observerTerminalStatus : "completed"
           : active.status;
     if (active.status === nextStatus) return;
     active.status = normalizeTaskStatus(nextStatus);
-    active.progress = nextStatus === "completed" ? 100 : Math.max(active.progress || 0, 30);
+    active.progress = isTerminalTaskStatus(nextStatus) ? 100 : Math.max(active.progress || 0, 30);
     active.updatedAt = new Date().toISOString();
+    if (isTerminalTaskStatus(nextStatus)) {
+      active.metadata = {
+        ...active.metadata,
+        observedWorking: observerManagedTurn ? Boolean(observer?.working) : active.metadata?.observedWorking,
+        lastActivity: nextStatus === "cancelled" ? "task cancelled" : "task complete",
+        lastEventType: "task.completed"
+      };
+    }
     this.eventBus.publish({
       source: this.source,
-      type: nextStatus === "completed" ? "task.completed" : "task.progress",
+      type: isTerminalTaskStatus(nextStatus) ? "task.completed" : "task.progress",
       taskId: active.id,
       conversationId: active.conversationId,
       payload: {
@@ -1157,6 +1351,11 @@ export class CodexRuntimeAdapter {
       task.status = "cancelled";
       task.progress = 100;
       task.updatedAt = new Date().toISOString();
+      task.metadata = {
+        ...task.metadata,
+        lastActivity: "task cancelled",
+        lastEventType: "task.completed"
+      };
       this.eventBus.publish({
         source: this.source,
         type: "task.completed",
@@ -1269,6 +1468,35 @@ export class CodexRuntimeAdapter {
       const snapshot = this.sessionObserver.snapshot();
       this.latestSessionObserverSnapshot = snapshot;
       this.syncSessionObserverState(snapshot);
+      const observerFollowupNow = Date.now();
+      const trackedObserverTasks = this.tasks.filter((task) => {
+        if (
+          !task?.metadata?.nativeDesktop
+          || !task.metadata?.threadId
+          || String(task.metadata.threadId).startsWith("client-new-thread:")
+        ) return false;
+        if (["running", "queued", "waiting_approval"].includes(task.status)) return true;
+        const submittedAt = Number(task.metadata?.promptSubmittedAtMs || task.metadata?.submittedAtMs || 0);
+        return Boolean(
+          isTerminalTaskStatus(task.status)
+          && task.metadata?.observerBaseline
+          && submittedAt
+          && observerFollowupNow - submittedAt < DESKTOP_UNBOUND_TASK_TIMEOUT_MS
+        );
+      });
+      const trackedThreadIds = new Set(trackedObserverTasks
+        .map((task) => String(task.metadata.threadId)));
+      for (const threadId of trackedThreadIds) {
+        if (threadId === snapshot?.threadId) continue;
+        const targetedSnapshot = this.sessionObserver.snapshotForThread?.(threadId);
+        if (!targetedSnapshot?.threadId) continue;
+        const newestSubmittedAt = Math.max(0, ...trackedObserverTasks
+          .filter((task) => task.metadata?.threadId === threadId)
+          .map((task) => Number(task.metadata?.promptSubmittedAtMs || task.metadata?.submittedAtMs || 0)));
+        const targetedAt = Date.parse(targetedSnapshot.updatedAt || "") || 0;
+        if (newestSubmittedAt && targetedAt && targetedAt < newestSubmittedAt) continue;
+        this.syncSessionObserverState(targetedSnapshot);
+      }
     } catch (error) {
       if (!this.sessionObserverErrorReported) {
         this.sessionObserverErrorReported = true;
@@ -1316,11 +1544,184 @@ export class CodexRuntimeAdapter {
     };
   }
 
+  observerHasTerminalStateForThread(threadId) {
+    const observer = this.latestSessionObserverSnapshot;
+    return Boolean(
+      threadId
+      && observer?.threadId === threadId
+      && observer.hasTurnState === true
+      && observer.working === false
+      && observer.waitingApproval !== true
+    );
+  }
+
+  captureSessionObserverBaseline() {
+    let snapshot = this.latestSessionObserverSnapshot;
+    if (!snapshot && this.sessionObserver) {
+      try {
+        snapshot = this.sessionObserver.snapshot();
+        this.latestSessionObserverSnapshot = snapshot;
+      } catch {
+        snapshot = undefined;
+      }
+    }
+    return {
+      threadId: snapshot?.threadId,
+      turnId: snapshot?.turnId,
+      activitySequence: Number(snapshot?.activitySequence || 0),
+      updatedAt: snapshot?.updatedAt,
+      capturedAtMs: Date.now()
+    };
+  }
+
+  observerAdvancedBeyondTaskBaseline(task, snapshot) {
+    if (
+      !task
+      || !snapshot?.threadId
+      || snapshot.threadId !== task.metadata?.threadId
+      || snapshot.hasTurnState !== true
+      || snapshot.working !== false
+      || snapshot.waitingApproval === true
+    ) {
+      return false;
+    }
+    const snapshotAt = Date.parse(snapshot.updatedAt || "") || 0;
+    const submittedAt = Number(task.metadata?.promptSubmittedAtMs || 0);
+    if (snapshotAt && submittedAt && snapshotAt < submittedAt) return false;
+
+    const baseline = task.metadata?.observerBaseline;
+    if (!baseline) return Boolean(snapshotAt && submittedAt && snapshotAt >= submittedAt);
+    if (baseline.threadId && baseline.threadId !== snapshot.threadId) return true;
+    if (snapshot.turnId && snapshot.turnId !== baseline.turnId) return true;
+    return Number(snapshot.activitySequence || 0) > Number(baseline.activitySequence || 0);
+  }
+
+  unboundDesktopTaskForSnapshot(snapshot) {
+    if (!snapshot?.threadId || snapshot.hasTurnState !== true) return undefined;
+    const snapshotAt = Date.parse(snapshot.updatedAt || "") || 0;
+    const candidates = this.tasks
+      .filter((task) => {
+        const taskThreadId = String(task?.metadata?.threadId || "");
+        const unboundSubmission = !taskThreadId && !task?.conversationId;
+        const temporaryNewThreadSubmission = Boolean(
+          task?.metadata?.linkedFromUnboundSubmission
+          && taskThreadId.startsWith("client-new-thread:")
+        );
+        if (
+          !task?.metadata?.nativeDesktop
+          || (!unboundSubmission && !temporaryNewThreadSubmission)
+          || !["running", "queued", "waiting_approval"].includes(task.status)
+        ) {
+          return false;
+        }
+        const submittedAt = Number(task.metadata?.promptSubmittedAtMs || task.metadata?.submittedAtMs || 0);
+        if (!submittedAt || !snapshotAt || snapshotAt < submittedAt || snapshotAt - submittedAt > DESKTOP_UNBOUND_TASK_TIMEOUT_MS) {
+          return false;
+        }
+        const baseline = task.metadata?.observerBaseline;
+        if (!baseline) return false;
+        if (baseline.threadId && baseline.threadId !== snapshot.threadId) return true;
+        if (snapshot.turnId && snapshot.turnId !== baseline.turnId) return true;
+        return Number(snapshot.activitySequence || 0) > Number(baseline.activitySequence || 0);
+      })
+      .sort((left, right) => {
+        const leftAt = Number(left.metadata?.promptSubmittedAtMs || left.metadata?.submittedAtMs || 0);
+        const rightAt = Number(right.metadata?.promptSubmittedAtMs || right.metadata?.submittedAtMs || 0);
+        return leftAt - rightAt;
+      });
+    return candidates[0];
+  }
+
+  unboundDesktopTaskForNativeSnapshot(snapshot) {
+    if (!snapshot?.activeThreadKey) return undefined;
+    const observedAt = Date.now();
+    return this.tasks
+      .filter((task) => {
+        const taskThreadId = String(task?.metadata?.threadId || "");
+        const unboundSubmission = !taskThreadId && !task?.conversationId;
+        const temporaryNewThreadSubmission = Boolean(
+          task?.metadata?.linkedFromUnboundSubmission
+          && taskThreadId.startsWith("client-new-thread:")
+        );
+        if (
+          !task?.metadata?.nativeDesktop
+          || (!unboundSubmission && !temporaryNewThreadSubmission)
+          || !["running", "queued", "waiting_approval"].includes(task.status)
+        ) {
+          return false;
+        }
+        const submittedAt = Number(task.metadata?.promptSubmittedAtMs || task.metadata?.submittedAtMs || 0);
+        if (!submittedAt || observedAt < submittedAt || observedAt - submittedAt > DESKTOP_UNBOUND_TASK_TIMEOUT_MS) return false;
+        const baselineThreadId = task.metadata?.observerBaseline?.threadId;
+        return Boolean(baselineThreadId && baselineThreadId !== snapshot.activeThreadKey);
+      })
+      .sort((left, right) => {
+        const leftAt = Number(left.metadata?.promptSubmittedAtMs || left.metadata?.submittedAtMs || 0);
+        const rightAt = Number(right.metadata?.promptSubmittedAtMs || right.metadata?.submittedAtMs || 0);
+        return leftAt - rightAt;
+      })[0];
+  }
+
+  expireUnboundDesktopTasks(nowMs = Date.now()) {
+    const now = new Date(nowMs).toISOString();
+    for (const task of this.tasks) {
+      if (
+        !task?.metadata?.nativeDesktop
+        || task.metadata?.threadId
+        || task.conversationId
+        || !["running", "queued", "waiting_approval"].includes(task.status)
+      ) {
+        continue;
+      }
+      const submittedAt = Number(task.metadata?.promptSubmittedAtMs || task.metadata?.submittedAtMs || 0);
+      if (!submittedAt || nowMs - submittedAt < DESKTOP_UNBOUND_TASK_TIMEOUT_MS) continue;
+      task.status = "failed";
+      task.progress = 100;
+      task.updatedAt = now;
+      task.metadata = {
+        ...task.metadata,
+        unboundObserverTimeout: true,
+        lastActivity: "Codex Desktop did not expose the submitted task to the observer in time",
+        lastEventType: "task.failed"
+      };
+      this.eventBus.publish({
+        source: this.source,
+        type: "task.failed",
+        taskId: task.id,
+        payload: {
+          status: "failed",
+          surface: "desktop",
+          nativeDesktop: true,
+          reason: "unbound_desktop_observer_timeout"
+        }
+      });
+    }
+  }
+
   syncSessionObserverState(snapshot) {
+    this.expireUnboundDesktopTasks();
     if (!snapshot?.threadId) return;
     this.sessionObserverErrorReported = false;
     const conversationId = `codex:desktop:${snapshot.threadId}`;
     const now = snapshot.updatedAt || new Date().toISOString();
+    const terminalTaskForSnapshot = this.tasks.find((item) => {
+      if (item.metadata?.threadId !== snapshot.threadId || !isTerminalTaskStatus(item.status)) return false;
+      const taskTurnId = item.metadata?.observedTurnId || item.metadata?.turnId;
+      if (!snapshot.turnId) return true;
+      if (taskTurnId) return String(snapshot.turnId) === String(taskTurnId);
+      const snapshotAt = Date.parse(snapshot.updatedAt || "") || 0;
+      const terminalAt = Date.parse(item.updatedAt || "") || 0;
+      return !snapshotAt || !terminalAt || snapshotAt <= terminalAt;
+    });
+    const snapshotClaimsLateActivity = Boolean(
+      snapshot.working
+      || snapshot.waitingApproval
+      || (Array.isArray(snapshot.pendingApprovals) && snapshot.pendingApprovals.length)
+    );
+    if (terminalTaskForSnapshot && snapshotClaimsLateActivity) {
+      this.syncObservedDesktopApproval({ ...snapshot, waitingApproval: false, pendingApprovals: [] }, conversationId, now);
+      return;
+    }
     this.syncObservedDesktopApproval(snapshot, conversationId, now);
     const nativeSnapshot = this.desktopBridge?.lastSnapshot;
     const reconciledNativeSnapshot = this.reconcileNativeApprovalSnapshot(nativeSnapshot, snapshot);
@@ -1352,47 +1753,61 @@ export class CodexRuntimeAdapter {
         });
       }
     }
-    if (
-      this.desktopBridge?.isConnected?.()
-      && reconciledNativeSnapshot?.activeThreadKey === snapshot.threadId
-      && !nativeApprovalWasReconciled
-    ) {
-      // The native bridge is the authority when it has a correlated thread.
-      // The observer still updates approval detection above, but must not
-      // publish a second status stream for the same task.
-      return;
-    }
     const pendingDesktopApproval = this.approvals.some((approval) =>
       approval.status === "pending"
       && (approval.metadata?.nativeDesktop || approval.metadata?.observerApproval)
       && approval.metadata?.threadId === snapshot.threadId
     );
     const waitingApproval = Boolean(snapshot.waitingApproval || pendingDesktopApproval);
+    const normalizedObserverTerminalStatus = normalizeTaskStatus(snapshot.terminalStatus);
+    const observerTerminalStatus = isTerminalTaskStatus(normalizedObserverTerminalStatus)
+      ? normalizedObserverTerminalStatus
+      : "completed";
     const status = waitingApproval
       ? "waiting_approval"
       : snapshot.working
         ? "running"
-        : "completed";
+        : observerTerminalStatus;
     const stateKey = [
       snapshot.threadId,
       snapshot.turnId || "",
       status,
       snapshot.detail || "",
+      snapshot.activitySequence ?? "",
       snapshot.tokens ?? ""
     ].join(":");
 
     if (!this.selectedAppThreadId) this.activeAppThreadId = snapshot.threadId;
-    let task = this.tasks.find((item) =>
-      item.metadata?.threadId === snapshot.threadId
-      && (
-        !item.metadata?.turnId
-        || !snapshot.turnId
-        || item.metadata.turnId === snapshot.turnId
-      )
-    );
+    const unboundTask = this.unboundDesktopTaskForSnapshot(snapshot);
+    if (unboundTask) {
+      unboundTask.conversationId = conversationId;
+      unboundTask.metadata = {
+        ...unboundTask.metadata,
+        threadId: snapshot.threadId,
+        linkedFromUnboundSubmission: true
+      };
+    }
+    const threadTasks = this.tasks.filter((item) => item.metadata?.threadId === snapshot.threadId);
+    let task = snapshot.turnId
+      ? threadTasks.find((item) => item.metadata?.turnId === snapshot.turnId)
+      : undefined;
+    if (!task) {
+      task = threadTasks.find((item) =>
+        ["running", "queued", "waiting_approval"].includes(item.status)
+        && (!item.metadata?.turnId || !snapshot.turnId || item.metadata.turnId === snapshot.turnId)
+      );
+    }
+    if (!task && snapshot.turnId && isTerminalTaskStatus(status)) {
+      task = threadTasks.find((item) =>
+        isTerminalTaskStatus(item.status)
+        && !item.metadata?.turnId
+        && this.observerAdvancedBeyondTaskBaseline(item, snapshot)
+      );
+    }
+    if (!task && !snapshot.turnId) task = threadTasks[0];
     if (!task && snapshot.working) {
       task = {
-        id: `codex:desktop:observed:${snapshot.threadId}`,
+        id: `codex:desktop:observed:${snapshot.threadId}:${snapshot.turnId || Date.now()}`,
         source: this.source,
         agentId: "codex:desktop",
         conversationId,
@@ -1405,6 +1820,7 @@ export class CodexRuntimeAdapter {
           mode: "desktop",
           surface: "desktop",
           threadId: snapshot.threadId,
+          turnId: snapshot.turnId,
           observed: true,
           sessionObserver: true
         }
@@ -1419,6 +1835,7 @@ export class CodexRuntimeAdapter {
         payload: task
       });
     }
+    if (task) task = this.reconcileObservedTaskDuplicates(task, snapshot, now);
 
     const observedApproval = this.findPendingObservedDesktopApproval();
     if (
@@ -1432,27 +1849,71 @@ export class CodexRuntimeAdapter {
 
     const snapshotAt = Date.parse(snapshot.updatedAt || "") || 0;
     const taskStartedAt = Date.parse(task?.createdAt || "") || 0;
-    const observerCanUpdateTask = task?.metadata?.observed
-      || snapshotAt >= taskStartedAt
-      || task?.metadata?.turnId === snapshot.turnId;
+    const observerBaseline = task?.metadata?.observerBaseline;
+    const taskWasTerminal = isTerminalTaskStatus(task?.status);
+    const taskTurnId = task?.metadata?.observedTurnId || task?.metadata?.turnId;
+    const sameObservedTurn = !snapshot.turnId || !taskTurnId || String(snapshot.turnId) === String(taskTurnId);
+    const protectedTerminalTask = ["blocked", "cancelled"].includes(task?.status);
+    const wouldOverwriteTerminalTask = protectedTerminalTask || (taskWasTerminal && sameObservedTurn);
+    const terminalCanEnrich = Boolean(
+      taskWasTerminal
+      && isTerminalTaskStatus(status)
+      && this.observerAdvancedBeyondTaskBaseline(task, snapshot)
+    );
+    if (task && snapshot.hasTurnState && terminalCanEnrich) {
+      const cancelledDetail = task.status === "cancelled"
+        && status === "cancelled"
+        && /(abort|cancel)/i.test(String(snapshot.detail || ""))
+        ? snapshot.detail
+        : undefined;
+      task.title = snapshot.title || task.title;
+      task.metadata = {
+        ...task.metadata,
+        turnId: snapshot.turnId || task.metadata?.turnId,
+        observedDetail: snapshot.detail,
+        observedTokens: snapshot.tokens,
+        observedTurnId: snapshot.turnId,
+        observedActivitySequence: snapshot.activitySequence,
+        observedAssistantText: snapshot.assistantText || task.metadata?.observedAssistantText,
+        ...(cancelledDetail ? {
+          lastActivity: cancelledDetail,
+          lastEventType: "task.completed"
+        } : {})
+      };
+    }
+    const observerCanUpdateTask = !wouldOverwriteTerminalTask && (
+      task?.metadata?.observed
+      || task?.metadata?.turnId === snapshot.turnId
+      || (isTerminalTaskStatus(status)
+        ? observerBaseline
+          ? this.observerAdvancedBeyondTaskBaseline(task, snapshot)
+          : snapshotAt >= taskStartedAt
+        : snapshotAt >= taskStartedAt)
+    );
     if (task && snapshot.hasTurnState && observerCanUpdateTask) {
       task.status = normalizeTaskStatus(status);
-      task.progress = status === "completed" ? 100 : Math.max(task.progress || 0, waitingApproval ? 55 : 30);
+      task.progress = isTerminalTaskStatus(status) ? 100 : Math.max(task.progress || 0, waitingApproval ? 55 : 30);
       task.updatedAt = now;
       task.title = snapshot.title || task.title;
       task.metadata = {
         ...task.metadata,
+        turnId: snapshot.turnId || task.metadata?.turnId,
+        observedWorking: Boolean(snapshot.working),
         observedDetail: waitingApproval
           ? "approval required - choose ALLOW or DENY"
           : snapshot.detail,
         observedTokens: snapshot.tokens,
         observedTurnId: snapshot.turnId,
+        observedActivitySequence: snapshot.activitySequence,
+        observedAssistantText: snapshot.assistantText,
         lastActivity: waitingApproval
           ? "approval required - choose ALLOW or DENY"
           : snapshot.detail,
         lastEventType: waitingApproval
           ? "approval.requested"
-          : "task.progress"
+          : isTerminalTaskStatus(status)
+            ? "task.completed"
+            : "task.progress"
       };
     }
 
@@ -1486,11 +1947,11 @@ export class CodexRuntimeAdapter {
       this.conversations = this.conversations.slice(0, 50);
     }
 
-    if (!snapshot.hasTurnState || stateKey === this.sessionObserverLastState) return;
+    if (!snapshot.hasTurnState || stateKey === this.sessionObserverLastState || wouldOverwriteTerminalTask) return;
     this.sessionObserverLastState = stateKey;
     this.eventBus.publish({
       source: this.source,
-      type: status === "completed" ? "task.completed" : "task.progress",
+      type: isTerminalTaskStatus(status) ? "task.completed" : "task.progress",
       taskId: task?.id,
       conversationId,
       payload: {
@@ -1502,9 +1963,83 @@ export class CodexRuntimeAdapter {
           : snapshot.detail || `Codex Desktop ${status}.`,
         threadId: snapshot.threadId,
         turnId: snapshot.turnId,
-        tokens: snapshot.tokens
+        tokens: snapshot.tokens,
+        ...(snapshot.assistantText
+          ? { role: "assistant", content: snapshot.assistantText }
+          : {})
       }
     });
+  }
+
+  reconcileObservedTaskDuplicates(primaryTask, snapshot, now) {
+    const snapshotTurnId = String(snapshot?.turnId || "");
+    const primaryTurnId = String(primaryTask?.metadata?.observedTurnId || primaryTask?.metadata?.turnId || "");
+    if (primaryTask?.metadata?.observed && snapshotTurnId && primaryTurnId === snapshotTurnId) {
+      const canonical = this.tasks.find((candidate) => {
+        if (candidate === primaryTask || candidate.metadata?.observed) return false;
+        if (candidate.metadata?.threadId !== snapshot.threadId) return false;
+        const candidateTurnId = String(candidate.metadata?.observedTurnId || candidate.metadata?.turnId || "");
+        if (candidateTurnId === snapshotTurnId) return true;
+        return Boolean(
+          !candidateTurnId
+          && isTerminalTaskStatus(candidate.status)
+          && this.observerAdvancedBeyondTaskBaseline(candidate, snapshot)
+        );
+      });
+      if (canonical) {
+        canonical.progress = isTerminalTaskStatus(canonical.status) ? 100 : canonical.progress;
+        canonical.updatedAt = primaryTask.updatedAt || now;
+        canonical.title = primaryTask.title || canonical.title;
+        canonical.metadata = {
+          ...canonical.metadata,
+          turnId: snapshotTurnId,
+          observedTurnId: snapshotTurnId,
+          observedDetail: primaryTask.metadata?.observedDetail || canonical.metadata?.observedDetail,
+          observedTokens: primaryTask.metadata?.observedTokens ?? canonical.metadata?.observedTokens,
+          observedActivitySequence: primaryTask.metadata?.observedActivitySequence ?? canonical.metadata?.observedActivitySequence,
+          observedAssistantText: primaryTask.metadata?.observedAssistantText || canonical.metadata?.observedAssistantText
+        };
+        this.tasks = this.tasks.filter((candidate) => candidate !== primaryTask);
+        for (const approval of this.approvals) {
+          if (approval.taskId === primaryTask.id) approval.taskId = canonical.id;
+        }
+        primaryTask = canonical;
+      }
+    }
+    const activeStatuses = new Set(["running", "queued", "waiting_approval"]);
+    const removedTaskIds = new Set();
+    this.tasks = this.tasks.filter((candidate) => {
+      if (
+        candidate === primaryTask
+        || candidate.metadata?.threadId !== snapshot.threadId
+        || !activeStatuses.has(candidate.status)
+      ) {
+        return true;
+      }
+      if (candidate.metadata?.observerBaseline && !desktopObservationMatchesSubmission(candidate, snapshot)) return true;
+      const candidateTurnId = candidate.metadata?.turnId;
+      if (!candidateTurnId || !snapshot.turnId || candidateTurnId === snapshot.turnId) {
+        removedTaskIds.add(candidate.id);
+        return false;
+      }
+      candidate.status = "completed";
+      candidate.progress = 100;
+      candidate.updatedAt = now;
+      candidate.metadata = {
+        ...candidate.metadata,
+        supersededByTurnId: snapshot.turnId,
+        lastActivity: "superseded by a newer observed turn",
+        lastEventType: "task.completed"
+      };
+      return true;
+    });
+    if (!removedTaskIds.size) return primaryTask;
+    for (const approval of this.approvals) {
+      if (approval.status === "pending" && removedTaskIds.has(approval.taskId)) {
+        approval.taskId = primaryTask.id;
+      }
+    }
+    return primaryTask;
   }
 
   syncObservedDesktopApproval(snapshot, conversationId, now) {
@@ -1526,7 +2061,12 @@ export class CodexRuntimeAdapter {
     }));
 
     for (const approval of this.approvals) {
-      if (approval.status !== "pending" || !approval.metadata?.observerApproval || desired.has(approval.id)) continue;
+      if (
+        approval.status !== "pending"
+        || !approval.metadata?.observerApproval
+        || approval.metadata?.threadId !== snapshot.threadId
+        || desired.has(approval.id)
+      ) continue;
       approval.status = "expired";
       approval.resolvedAt = now;
       approval.updatedAt = now;
@@ -1540,10 +2080,17 @@ export class CodexRuntimeAdapter {
     }
 
     for (const [approvalId, item] of desired) {
-      const itemConversationId = `codex:${item.threadId}`;
+      const itemConversationId = `codex:desktop:${item.threadId}`;
       let task = this.tasks.find((candidate) =>
         candidate.metadata?.threadId === item.threadId
-        && (!item.turnId || !candidate.metadata?.turnId || candidate.metadata?.turnId === item.turnId)
+        && (
+          !item.turnId
+          || candidate.metadata?.turnId === item.turnId
+          || (
+            !candidate.metadata?.turnId
+            && ["running", "queued", "waiting_approval"].includes(candidate.status)
+          )
+        )
       );
       if (!task) {
         task = {
@@ -1583,6 +2130,7 @@ export class CodexRuntimeAdapter {
         task.updatedAt = now;
         task.metadata = {
           ...task.metadata,
+          turnId: item.turnId || task.metadata?.turnId,
           observedDetail: "approval required - choose ALLOW or DENY",
           lastActivity: "approval required - choose ALLOW or DENY",
           lastEventType: "approval.requested"
@@ -1594,6 +2142,8 @@ export class CodexRuntimeAdapter {
         && approval.metadata?.threadId === item.threadId
       );
       if (equivalent) {
+        equivalent.taskId = task.id;
+        equivalent.conversationId = itemConversationId;
         equivalent.metadata = {
           ...equivalent.metadata,
           observerDetected: true,
@@ -1704,8 +2254,24 @@ export class CodexRuntimeAdapter {
     }
     const task = pending.taskId ? this.tasks.find((item) => item.id === pending.taskId) : undefined;
     if (task) {
-      task.status = normalizeTaskStatus(approved ? "running" : "blocked");
-      task.updatedAt = decidedAt;
+      if (!approved && ["running", "queued", "waiting_approval", "completed"].includes(task.status)) {
+        task.status = normalizeTaskStatus("blocked");
+        task.progress = 100;
+        task.updatedAt = decidedAt;
+        task.metadata = {
+          ...task.metadata,
+          lastActivity: "approval denied",
+          lastEventType: "approval.resolved"
+        };
+      } else if (approved && !isTerminalTaskStatus(task.status)) {
+        task.status = normalizeTaskStatus("running");
+        task.updatedAt = decidedAt;
+        task.metadata = {
+          ...task.metadata,
+          lastActivity: "approval approved - task continuing",
+          lastEventType: "approval.resolved"
+        };
+      }
     }
     this.eventBus.publish({
       source: this.source,
@@ -2159,6 +2725,7 @@ export class CodexRuntimeAdapter {
     const taskId = this.taskIdForAppServer(params);
     const task = taskId ? this.tasks.find((item) => item.id === taskId) : undefined;
     const status = appServerStatus(params.status);
+    if (task && isTerminalTaskStatus(task.status)) return;
 
     if (task) {
       task.status = normalizeTaskStatus(status);
@@ -2188,6 +2755,7 @@ export class CodexRuntimeAdapter {
 
     const taskId = this.taskIdForAppServer(params);
     const task = taskId ? this.tasks.find((item) => item.id === taskId) : undefined;
+    if (task && isTerminalTaskStatus(task.status)) return;
     if (task) {
       if (turnId) {
         task.metadata.turnId = turnId;
@@ -2210,6 +2778,11 @@ export class CodexRuntimeAdapter {
   handleAppServerTurnCompleted(params) {
     const taskId = this.taskIdForAppServer(params);
     const task = taskId ? this.tasks.find((item) => item.id === taskId) : undefined;
+    const completedTurnId = appServerTurnId(params);
+    if (task && isTerminalTaskStatus(task.status)) {
+      if (!completedTurnId || completedTurnId === this.activeAppTurnId) this.activeAppTurnId = undefined;
+      return;
+    }
     const failed = Boolean(params.turn?.error || params.error);
     if (task) {
       this.cancelPendingAppServerApprovalsForTask(task.id, failed ? "failed" : "completed");
@@ -2217,7 +2790,6 @@ export class CodexRuntimeAdapter {
       task.progress = failed ? task.progress || 0 : 100;
       task.updatedAt = new Date().toISOString();
     }
-    const completedTurnId = appServerTurnId(params);
     if (!completedTurnId || completedTurnId === this.activeAppTurnId) {
       this.activeAppTurnId = undefined;
     }
@@ -2327,6 +2899,13 @@ export class CodexRuntimeAdapter {
 
   recordAppServerApproval(approval) {
     const now = new Date().toISOString();
+    const task = approval.taskId ? this.tasks.find((item) => item.id === approval.taskId) : undefined;
+    if (task && isTerminalTaskStatus(task.status)) {
+      const resolver = approval.metadata?.resolve;
+      if (approval.metadata) delete approval.metadata.resolve;
+      if (resolver) resolver(normalizeAppServerApprovalDecision({ decision: "reject" }, approval).response);
+      return false;
+    }
     const existing = this.approvals.find((item) => item.id === approval.id);
     const next = existing
       ? { ...existing, ...approval, status: "pending", requestedAt: existing.requestedAt || approval.requestedAt, updatedAt: now }
@@ -2338,12 +2917,12 @@ export class CodexRuntimeAdapter {
       ...this.approvals.filter((item) => item.id !== next.id)
     ].slice(0, 50);
 
-    const task = next.taskId ? this.tasks.find((item) => item.id === next.taskId) : undefined;
-    if (task) {
-      task.status = normalizeTaskStatus("waiting_approval");
-      task.progress = Math.max(task.progress || 0, 55);
-      task.updatedAt = now;
-      task.metadata.pendingApprovalId = next.id;
+    const nextTask = next.taskId ? this.tasks.find((item) => item.id === next.taskId) : undefined;
+    if (nextTask) {
+      nextTask.status = normalizeTaskStatus("waiting_approval");
+      nextTask.progress = Math.max(nextTask.progress || 0, 55);
+      nextTask.updatedAt = now;
+      nextTask.metadata.pendingApprovalId = next.id;
     }
 
     this.eventBus.publish({
@@ -2404,7 +2983,7 @@ export class CodexRuntimeAdapter {
     if (resolver) resolver(decision.response);
 
     const task = pending.taskId ? this.tasks.find((item) => item.id === pending.taskId) : undefined;
-    if (task) {
+    if (task && !isTerminalTaskStatus(task.status)) {
       task.status = normalizeTaskStatus(decision.approved ? "running" : "blocked");
       task.updatedAt = now;
       delete task.metadata.pendingApprovalId;
@@ -2595,7 +3174,7 @@ export class CodexRuntimeAdapter {
 
   handleCliEvent(taskId, event) {
     const task = this.tasks.find((item) => item.id === taskId);
-    if (!task) return;
+    if (!task || isTerminalTaskStatus(task.status)) return;
 
     task.updatedAt = new Date().toISOString();
     const approval = this.approvalFromCliEvent(task, event);
@@ -2676,6 +3255,7 @@ export class CodexRuntimeAdapter {
   handleCliStderr(taskId, line) {
     if (!line || line.includes("WARN")) return;
     const task = this.tasks.find((item) => item.id === taskId);
+    if (task && isTerminalTaskStatus(task.status)) return;
     this.eventBus.publish({
       source: this.source,
       type: "runtime.error",
@@ -2706,7 +3286,7 @@ export class CodexRuntimeAdapter {
 
   finishCliTask(taskId, status, payload = {}) {
     const task = this.tasks.find((item) => item.id === taskId);
-    if (!task) return;
+    if (!task || isTerminalTaskStatus(task.status)) return false;
     if (status !== "waiting_approval") {
       this.cancelPendingApprovalsForTask(taskId, status);
     }
@@ -2720,6 +3300,7 @@ export class CodexRuntimeAdapter {
       conversationId: task.conversationId,
       payload: { ...payload, task }
     });
+    return true;
   }
 
   approvalFromCliEvent(task, event) {
@@ -2860,7 +3441,7 @@ export class CodexRuntimeAdapter {
         approvalPolicy: decision.approved ? "never" : this.config.approvalPolicy
       });
       resumeTaskId = resume.task.id;
-    } else if (task) {
+    } else if (task && !isTerminalTaskStatus(task.status)) {
       task.status = normalizeTaskStatus(decision.approved ? "running" : "blocked");
       task.updatedAt = now;
       delete task.metadata.pendingApprovalId;
@@ -3036,6 +3617,12 @@ export class CodexRuntimeAdapter {
       });
     });
   }
+}
+
+function isTerminalTaskStatus(status) {
+  return ["completed", "done", "failed", "error", "cancelled", "canceled", "blocked"].includes(
+    String(status || "").toLowerCase()
+  );
 }
 
 function normalizeCodexSurface(value) {
@@ -3341,6 +3928,28 @@ function desktopDraftKey(clientId) {
   return normalized || "legacy-client";
 }
 
+function desktopWorkspaceResult(health, openState, launcherInvoked) {
+  return {
+    ...health,
+    openState,
+    launcherInvoked,
+    microReady: health?.runtime?.ready === true
+  };
+}
+
+function isDesktopBridgeUnavailableError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return [
+    "fetch failed",
+    "econnrefused",
+    "cdp returned http",
+    "renderer was not found",
+    "cdp connection timed out",
+    "cdp connection failed",
+    "cdp connection closed"
+  ].some((fragment) => message.includes(fragment));
+}
+
 function normalizeReasoning(value) {
   const normalized = String(value || "").toLowerCase();
   return ["low", "med", "high", "xhigh"].includes(normalized) ? normalized : undefined;
@@ -3413,4 +4022,15 @@ function stringValue(value) {
 function summarizeForApproval(value, limit) {
   const text = stringValue(value).replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+}
+
+function desktopObservationMatchesSubmission(task, snapshot) {
+  const baseline = task.metadata?.observerBaseline;
+  if (!baseline) return true;
+  const observedAt = Date.parse(snapshot.updatedAt || "") || 0;
+  const submittedAt = Number(task.metadata?.promptSubmittedAtMs || 0);
+  if (observedAt && submittedAt && observedAt < submittedAt) return false;
+  if (baseline.threadId && snapshot.threadId !== baseline.threadId) return true;
+  if (baseline.turnId && snapshot.turnId) return baseline.turnId !== snapshot.turnId;
+  return Number(snapshot.activitySequence || 0) > Number(baseline.activitySequence || 0);
 }

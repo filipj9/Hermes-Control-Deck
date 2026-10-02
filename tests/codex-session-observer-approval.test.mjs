@@ -14,7 +14,7 @@ function fixture() {
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-control-observer-"));
   const sessions = path.join(codexHome, "sessions", "2026", "08", "02");
   fs.mkdirSync(sessions, { recursive: true });
-  const threadId = "00000000-0000-4000-8000-000000000001";
+  const threadId = "019f905e-b6ee-7822-8f49-ff1132188056";
   const filePath = path.join(sessions, `rollout-2026-08-02T00-00-00-${threadId}.jsonl`);
   writeEvent(filePath, { type: "session_meta", payload: { thread_source: "user" } });
   writeEvent(filePath, { type: "turn_context", payload: { turn_id: "turn-1" } });
@@ -50,6 +50,36 @@ test("successful task_complete without an answer does not retain previous-turn t
   observer.ingestLine(JSON.stringify({ type:"event_msg", payload:{type:"task_complete",turn_id:"two",last_agent_message:null} }));
   assert.equal(observer.snapshotValue.terminalStatus,"completed");
   assert.equal(observer.snapshotValue.assistantText,undefined);
+});
+
+test("reads a terminal background thread even when another session is newer", (t) => {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-control-observer-background-"));
+  t.after(() => fs.rmSync(codexHome, { recursive: true, force: true }));
+  const sessions = path.join(codexHome, "sessions", "2026", "10", "01");
+  fs.mkdirSync(sessions, { recursive: true });
+  const targetThread = "01a06ead-6a87-73f2-8230-8b0393c1877c";
+  const newerThread = "01a06ea1-1d46-7e53-9858-9ea48ed5a0a1";
+  const targetFile = path.join(sessions, `rollout-target-${targetThread}.jsonl`);
+  const newerFile = path.join(sessions, `rollout-newer-${newerThread}.jsonl`);
+  writeEvent(targetFile, { type: "session_meta", payload: { thread_source: "user" } });
+  writeEvent(targetFile, { type: "turn_context", payload: { turn_id: "turn-target" } });
+  writeEvent(targetFile, { type: "response_item", payload: { type: "message", role: "assistant", content: "FAST DONE" } });
+  writeEvent(targetFile, { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-target", last_agent_message: "FAST DONE" } });
+  writeEvent(newerFile, { type: "session_meta", payload: { thread_source: "user" } });
+  writeEvent(newerFile, { type: "turn_context", payload: { turn_id: "turn-newer" } });
+  const now = Date.now() / 1000;
+  fs.utimesSync(targetFile, now - 2, now - 2);
+  fs.utimesSync(newerFile, now, now);
+
+  const observer = new CodexSessionObserver({ codexHome });
+  assert.equal(observer.snapshot().threadId, newerThread);
+  const target = observer.snapshotForThread(targetThread);
+
+  assert.equal(target.threadId, targetThread);
+  assert.equal(target.turnId, "turn-target");
+  assert.equal(target.working, false);
+  assert.equal(target.terminalStatus, "completed");
+  assert.equal(target.assistantText, "FAST DONE");
 });
 
 test("keeps an escalated Codex Desktop tool call waiting until its matching output", (t) => {
@@ -142,8 +172,8 @@ test("finds an approval in a background session while another session is newer",
   t.after(() => fs.rmSync(codexHome, { recursive: true, force: true }));
   const sessions = path.join(codexHome, "sessions", "2026", "08", "02");
   fs.mkdirSync(sessions, { recursive: true });
-  const backgroundId = "00000000-0000-4000-8000-000000000002";
-  const foregroundId = "00000000-0000-4000-8000-000000000001";
+  const backgroundId = "019fc04a-a096-7631-a64a-ded0a9c01f70";
+  const foregroundId = "019f905e-b6ee-7822-8f49-ff1132188056";
   const background = path.join(sessions, `rollout-background-${backgroundId}.jsonl`);
   const foreground = path.join(sessions, `rollout-foreground-${foregroundId}.jsonl`);
 
