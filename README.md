@@ -75,8 +75,8 @@ This repository is an alpha release candidate: **v0.1.0-alpha**.
 
 The current public tree has been checked with:
 
-- the complete automated test suite passing in the isolated release staging tree;
-- JavaScript syntax checks passing for the application check list;
+- **161/161** automated tests passing in the isolated release staging tree;
+- **20/20** JavaScript syntax checks passing for the application check list;
 - local API smoke checks for health, runtimes, agents, tasks, sessions,
   approvals, and events;
 - public-tree checks for secrets, machine-specific defaults, and private
@@ -440,6 +440,7 @@ See [SECURITY.md](SECURITY.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - [PUBLIC_RELEASE_AUDIT.md](PUBLIC_RELEASE_AUDIT.md) - release verification;
 - [docs/CLEAN_MACHINE_TEST.md](docs/CLEAN_MACHINE_TEST.md) - clean-machine test plan;
 - [docs/PATCH_04_WEB_PUSH.md](docs/PATCH_04_WEB_PUSH.md) - secure opt-in Web Push setup and verification;
+- [docs/PATCH_06_CODEX_26_928_FOLLOWUP.md](docs/PATCH_06_CODEX_26_928_FOLLOWUP.md) - bounded Hermes health and the isolated Codex 26.928 Desktop follow-up;
 - [docs/STABILITY_OUTPUT_PUSH_PATCH_SERIES.md](docs/STABILITY_OUTPUT_PUSH_PATCH_SERIES.md) - ordered installation, verification and rollback guide for the stability update;
 - [docs/CODEX_UPDATE_HARDENING.md](docs/CODEX_UPDATE_HARDENING.md) - current Codex update, security and experimental Desktop hardening;
 - [docs/HERMES_GATEWAY_TUI.md](docs/HERMES_GATEWAY_TUI.md) - optional Gateway/TUI and approval bridge;

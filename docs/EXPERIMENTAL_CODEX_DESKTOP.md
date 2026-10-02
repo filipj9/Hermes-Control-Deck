@@ -13,6 +13,11 @@ registered `CODEX` / `composer.submit` command path and supports the split
 `app-initial` / `app-shared` Micro persistence layout. Treat this as a tested
 snapshot, not a compatibility guarantee.
 
+Background lifecycle correlation also reads the requested thread instead of
+assuming that the newest session is the controlled one. This preserves RUN,
+STOP, approval deny/allow, and terminal state while another conversation is
+selected.
+
 ## Status and disclaimer
 
 This integration is **Windows-only, experimental, unofficial, and

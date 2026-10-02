@@ -1,143 +1,78 @@
-# Hermes Control CLI-first Public Release Audit
+# Hermes Control public release audit
 
-Date: 2026-07-29
-Scope: the isolated CLI-first open-source copy only.
+Date: 2026-10-02
+Scope: isolated public checkout only.
 
-The private production project was not modified during this preparation.
-This tree contains Hermes WebUI and Codex CLI adapters only. Codex Desktop,
-CDP, renderer automation, and private Micro mechanisms are outside the release.
+The private production deployment was not modified during this preparation.
+Nothing from this checkout has been pushed, released, deployed, or applied to
+the production installation.
 
-## Executive Result
+## Result
 
-**Prepared for an alpha GitHub upload, with two documented compatibility limits.**
+The local public branch is ready for owner review as an alpha patch candidate.
 
-- Public working tree contains no local `.env`, password, auth token, or
-  machine-specific helper.
-- Syntax checks: **10/10 PASS**.
-- Automated contract and functional tests: **13/13 PASS**.
-- API audit: **7/7 PASS** (`health`, `runtimes`, `agents`, `tasks`, `sessions`,
-  `approvals`, `events`).
-- `git diff --check`: **PASS**; remaining output is only Git line-ending
-  normalization warnings.
-- Live Codex approval delivery remains **UNVERIFIED** for the installed
-  `codex exec --json` protocol. The UI and adapter contract are covered by
-  fixtures, but the runtime must emit an approval event for the controls to
-  have a live pending approval to resolve.
+- JavaScript syntax checks: **20/20 passed**.
+- Automated tests: **161/161 passed**.
+- Focused Codex Desktop lifecycle and routing tests: **31/31 passed**.
+- CLI-first boundary tests: **4/4 passed**.
+- `git diff --check`: **passed**.
+- The optional Desktop add-on remains disabled by default and quarantined from
+  the supported CLI-first runtime.
 
-## Audit 1 — Public Tree and Secrets
+These results cover deterministic tests and local fixtures. The experimental
+Desktop add-on still needs physical verification after every Codex Desktop
+update because renderer bundles are not a stable public API.
 
-Result: **PASS**
+## Included follow-up
 
-Checks performed:
+The candidate adds three independent fixes:
 
-- `.env` removed from the public working tree; its contents were not read.
-- `.env.example` remains as the only configuration template.
-- Local helper scripts containing a machine path were removed from the public
-  tree.
-- `backups/` is ignored by Git and is not part of the release tree.
-- Tracked-file scan found no `.env`, private IP, Tailscale address, password
-  value, auth token value, or Windows user path.
-- The only remaining password references are environment-variable names and
-  code paths that read `HERMES_PASSWORD` at runtime.
+1. Bounded Hermes health requests return a structured offline state instead of
+   leaving the control panel waiting indefinitely.
+2. The disabled-by-default Desktop experiment recognizes the Codex
+   `26.928.2636.0` renderer contracts, including split persistence assets and
+   the registered `CODEX` / `composer.submit` path.
+3. Background Desktop tasks retain the correct RUN, STOP, DENY, ALLOW and
+   terminal state when another conversation is selected.
 
-The public repository must still be checked once more after copying it to the
-Git hosting client. Never add the local backup directory or a generated `.env`.
+The public implementation does not contain the private launcher, production
+ports, deployment scripts, credentials, logs, backups, or runtime state. It
+does not start, stop, restart, or terminate Codex Desktop.
 
-## Audit 2 — Code, Tests, and Desktop Isolation
+## Security boundary
 
-Result: **PASS**
+- The server binds to `127.0.0.1` by default.
+- Mutating requests require the control token and JSON content type.
+- Host and origin checks fail closed unless explicitly configured.
+- The Desktop CDP endpoint is restricted to loopback literals.
+- `.env.example` is a template; a live `.env` must never be committed.
+- Public responses sanitize credentials and raw transport payloads.
+- Optional Hermes gateway and Web Push integrations remain opt-in.
 
-- Every JavaScript source in the project check list passes `node --check`.
-- All repository tests pass: **13 passed, 0 failed**.
-- Codex CLI fixture covers JSONL output, stderr, completion, approval shape,
-  and the STOP/completion race.
-- Hermes fixture covers authentication, SSE, approval, and cancellation.
-- Public-source boundary test confirms no private Desktop bridge source or
-  import is shipped.
-- Configuration tests confirm explicit `mode=cli` and no private defaults.
+This is a localhost, single-user alpha. Remote access still requires a trusted
+VPN or a correctly configured TLS reverse proxy. Do not expose the default
+server directly to an untrusted network.
 
-The tests prove the public contract and local mocks. They do not prove that an
-arbitrary external Hermes deployment or every Codex CLI version exposes the
-same optional events.
+## Compatibility limits
 
-## Audit 3 — Runtime and API Smoke Test
+1. Hermes WebUI is external and deployments can expose different route and
+   gateway contracts.
+2. Codex CLI approval events depend on the installed CLI version and policy.
+3. Codex Desktop support is Windows-only, unofficial, unsupported, and may
+   break after any update.
+4. Passing fixtures do not replace a physical end-to-end check of the exact
+   installed Desktop build.
 
-Result: **PASS**
+## Reproduce the checks
 
-The local audit server returned HTTP 200 for all seven public smoke checks:
+From a clean checkout with Node.js 20 or newer and dependencies installed:
 
-| Check | Result |
-|---|---|
-| `health` | PASS |
-| `runtimes` | PASS |
-| `agents` | PASS |
-| `tasks` | PASS |
-| `sessions` | PASS |
-| `approvals` | PASS |
-| `events` | PASS |
-
-The server was exercised without a live `.env` in the public tree; test
-configuration was supplied by the test harness. A new user must create their
-own `.env` from `.env.example` before starting the application.
-
-## Audit 4 — Portability and Configuration
-
-Result: **PASS with documented setup requirements**
-
-- Node.js requirement is declared as `>=20`.
-- Hermes URL is configured through `HERMES_BASE_URL`.
-- Codex executable is discovered through `PATH` or `CODEX_EXECUTABLE`.
-- `CODEX_WORKDIR` is intentionally empty in the template and must be set by
-  each user to an existing workspace.
-- `CONTROL_SERVER_PORT` defaults to `4240` and is configurable.
-- The default bind remains `127.0.0.1`; the project does not open ports,
-  configure Tailscale, or change firewall rules.
-- Hermes WebUI is an external dependency and is not copied or vendored.
-
-The clean-install path is: install Node and the user's Hermes WebUI/Codex CLI,
-copy `.env.example` to `.env`, set the local values, then run `npm start`.
-
-## Audit 5 — Security and Release Readiness
-
-Result: **PASS for localhost single-user alpha; NOT production hardened**
-
-Verified baseline:
-
-- localhost bind by default;
-- required control token with minimum length validation;
-- explicit CORS allowlist instead of `*`;
-- body, prompt, rate, concurrency, and run limits;
-- dedicated Codex workdir configuration;
-- path-traversal protection;
-- protected API/SSE routes;
-- no secrets in the public tree;
-- no Desktop/CDP/Micro runtime in the public tree.
-
-Known limitations that must remain visible in the alpha documentation:
-
-1. Live Codex approval was not confirmed with `codex exec --json`; fixture
-   support is present, but runtime support depends on the installed CLI.
-2. Hermes compatibility still depends on the user's WebUI version and its
-   external-chat/gateway configuration.
-3. Remote phone access requires a trusted VPN or TLS reverse proxy. Do not
-   expose the default server directly to an untrusted network.
-4. Cookie/TLS hardening such as `Secure`, CSP, HSTS, and frame-policy headers
-   should be completed before treating the server as a public multi-user
-   service.
-
-## Release Decision
-
-The isolated tree is ready to upload as **`v0.1.0-alpha`**, provided the
-GitHub upload contains only tracked release files and the README keeps the
-approval and alpha limitations above. It is not being presented as a
-production-hardened public service, and it does not promise Codex Desktop.
-
-Before pushing, run:
-
-```text
+```powershell
+npm run check
+npm test
+git diff --check
 git status --short
-git ls-files
-node --test tests/*.test.mjs
 ```
 
-Confirm that `.env` and `backups/` are absent from the staged file list.
+Before any push, inspect the complete tracked-file list and run the release
+secret audit against both the working tree and generated patch artifacts.

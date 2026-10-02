@@ -19,6 +19,9 @@ Codex Desktop renderer work to the disabled-by-default experimental add-on.
   `app-shared` persistence exports, requires the exact HID event handler, and
   follows one guarded local command wrapper to its imported dispatcher.
 - Terminal observer state cannot be revived by late output from an older turn.
+- Background session polling reads the requested thread and keeps STOP, denied
+  approvals, and terminal results authoritative when another conversation is
+  selected.
 - Hermes slow chat starts retain a bounded identity window, explicit reasoning
   fallback state, per-session WebSocket reasoning and cancelled DENY results.
 
