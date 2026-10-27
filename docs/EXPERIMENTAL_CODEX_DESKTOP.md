@@ -7,16 +7,22 @@ protections do not make the renderer contract stable; repeat physical E2E
 checks after every Codex Desktop update. See
 `CODEX_UPDATE_HARDENING.md` and `PATCH_05_EXPERIMENTAL_DESKTOP.md`.
 
-The current compatibility follow-up reflects contracts observed in Codex
-Desktop MSIX `26.928.2636.0` (internal version `26.928.21956`). It uses the
-registered `CODEX` / `composer.submit` command path and supports the split
-`app-initial` / `app-shared` Micro persistence layout. Treat this as a tested
-snapshot, not a compatibility guarantee.
+The current compatibility follow-up reflects contracts observed through Codex
+Desktop MSIX `26.1016.6573.0` (app version `26.1016.51333`). It uses the
+registered `CODEX` / `composer.submit` command path, supports both split
+`app-initial` / `app-shared` and inline Micro persistence layouts, and keeps
+fixture coverage for the 26.930, 26.1007, and 26.1016 command dispatchers.
+Treat this as a tested snapshot, not a compatibility guarantee.
 
 Background lifecycle correlation also reads the requested thread instead of
 assuming that the newest session is the controlled one. This preserves RUN,
 STOP, approval deny/allow, and terminal state while another conversation is
 selected.
+
+STOP uses a native CDP mouse click on one unambiguous visible control. It waits
+for asynchronous prompt submission to settle, handles a replacement STOP
+control during the provisional-to-active turn transition, and requires stable
+control absence before reporting success.
 
 ## Status and disclaimer
 
@@ -70,44 +76,59 @@ is restarted.
 
 ## Start Codex Desktop with loopback CDP
 
-First open Codex Desktop normally and sign in. Keep it open while the command
-below discovers its executable. The command then pauses and asks you to exit
-Codex Desktop yourself. CDP launch flags are only reliable when no existing
+Open Codex Desktop normally and sign in once, then exit it completely,
+including its tray icon. CDP launch flags are only reliable when no existing
 Codex Desktop process is re-used.
 
-Run this in a regular PowerShell window. It prefers the path of the visible
-Codex process and falls back to Microsoft Store package discovery. It never
-terminates the application automatically:
+Run this in a regular PowerShell window. It resolves the Microsoft Store/MSIX
+application identity and uses packaged activation so the process keeps its
+identity. It never terminates the application automatically:
 
 ```powershell
-$running = Get-Process ChatGPT -ErrorAction SilentlyContinue |
-  Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path) } |
-  Select-Object -First 1
-$exe = $running.Path
+if (Get-Process ChatGPT -ErrorAction SilentlyContinue) {
+  throw "Exit Codex Desktop completely, including its tray icon, then retry."
+}
 
-if (-not $exe) {
-  $package = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-  if ($package) {
-    $exe = Join-Path $package.InstallLocation "app\ChatGPT.exe"
+$package = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction Stop |
+  Sort-Object Version -Descending |
+  Select-Object -First 1
+[xml]$manifest = Get-Content -LiteralPath (Join-Path $package.InstallLocation "AppxManifest.xml") -Raw
+$ns = [Xml.XmlNamespaceManager]::new($manifest.NameTable)
+$ns.AddNamespace("m", $manifest.DocumentElement.NamespaceURI)
+$app = $manifest.SelectSingleNode('/m:Package/m:Applications/m:Application[@Id="App"]', $ns)
+if (-not $app) { throw "Codex Desktop AppUserModelId was not found." }
+$appUserModelId = "$($package.PackageFamilyName)!$($app.Id)"
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IApplicationActivationManager {
+  [PreserveSig]
+  int ActivateApplication(string appUserModelId, string arguments, uint options, out uint processId);
+  [PreserveSig]
+  int ActivateForFile(IntPtr appUserModelId, IntPtr itemArray, IntPtr verb, out uint processId);
+  [PreserveSig]
+  int ActivateForProtocol(IntPtr appUserModelId, IntPtr itemArray, out uint processId);
+}
+[ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
+class ApplicationActivationManager {}
+public static class CodexPackageActivation {
+  public static uint Start(string id, string arguments) {
+    var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+    uint pid;
+    int hr = manager.ActivateApplication(id, arguments, 2, out pid);
+    if (hr != 0) Marshal.ThrowExceptionForHR(hr);
+    return pid;
   }
 }
+'@
 
-if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
-  throw "Codex Desktop executable was not found. Open Codex Desktop and run this command again."
-}
-
-Write-Host "Codex executable: $exe"
-Read-Host "Fully exit Codex Desktop, then press Enter"
-
-if (Get-Process ChatGPT -ErrorAction SilentlyContinue) {
-  throw "Codex Desktop is still running. Exit it completely and retry."
-}
-
-Start-Process -FilePath $exe -ArgumentList @(
-  "--remote-debugging-address=127.0.0.1",
-  "--remote-debugging-port=4248"
+$pid = [CodexPackageActivation]::Start(
+  $appUserModelId,
+  "--remote-debugging-address=127.0.0.1 --remote-debugging-port=4248"
 )
+Write-Host "Codex Desktop package activation PID: $pid"
 ```
 
 The command only starts the new CDP-enabled process after confirming that the
