@@ -33,7 +33,10 @@ function harness({
   missingExports = false,
   hidHandlers = 1,
   splitFactory = false,
-  splitFactoryCurrent = false
+  splitFactoryCurrent = false,
+  splitFactoryLatest = false,
+  splitFactoryNext = false,
+  inlineFactoryCurrent = false
 } = {}) {
   const assets = bundled ? [appUrl, sharedUrl] : [persistedUrl, oldBusUrl];
   const persisted = new Map();
@@ -57,7 +60,29 @@ function harness({
     handlers,
     dispatchHostMessage(message) { events.push(message); }
   };
-  const appSource = splitFactoryCurrent
+  const appSource = inlineFactoryCurrent
+    ? [
+        "function Lg(e,t,n){",
+        "  let r=Dg(e,t);",
+        "  n?.publishDelayMs==null?kg(e,c):gjt(e,c,n.publishDelayMs);",
+        "  return r;",
+        "}",
+        "var uUs;function fUs(){uUs=Lg(`codex-micro-has-ever-been-detected`,!1)}",
+        missingExports ? "export{Lg as ALr}" : "export{kg as BLr,Dg as ILr,Lg as ALr}"
+      ].join("")
+    : splitFactoryNext
+    ? [
+        "import{bDt as Nu}from\"./app-shared-synthetic.js\";",
+        "var pQa;function hQa(){pQa=Nu(`codex-micro-has-ever-been-detected`,!1)}",
+        "export{}"
+      ].join("")
+    : splitFactoryLatest
+    ? [
+        "import{OCt as xo}from\"./app-shared-synthetic.js\";",
+        "var latest;function init(){latest=xo('codex-micro-has-ever-been-detected',!1)}",
+        "export{}"
+      ].join("")
+    : splitFactoryCurrent
     ? [
         "import{nCt as jp}from\"./app-shared-synthetic.js\";",
         "var NAa;function FAa(){NAa=jp('codex-micro-has-ever-been-detected',!1)}",
@@ -78,7 +103,25 @@ function harness({
         "var rqs;function aqs(){rqs=xv(`codex-micro-has-ever-been-detected`,!1)}",
         missingExports ? "export{Fp as Qfn}" : "export{Ip as npn,Fp as Qfn}"
       ].join("");
-  const sharedSource = splitFactoryCurrent
+  const sharedSource = splitFactoryNext
+    ? [
+        "function FJ(e,t,n){",
+        "  let s=_I(e,t);",
+        "  n?.publishDelayMs==null?yI(e,c):Delay(e,c,n.publishDelayMs);",
+        "  return s;",
+        "}",
+        missingExports ? "export{FJ as bDt}" : "export{yI as d1t,_I as t1t,FJ as bDt}"
+      ].join("")
+    : splitFactoryLatest
+    ? [
+        "function XY(e,t,n){",
+        "  let s=BR(e,t);",
+        "  n?.publishDelayMs==null?HR(e,c):Delay(e,c,n.publishDelayMs);",
+        "  return s;",
+        "}",
+        missingExports ? "export{XY as OCt}" : "export{HR as pqt,BR as rqt,XY as OCt}"
+      ].join("")
+    : splitFactoryCurrent
     ? [
         "function cq(e,t,n){",
         "  let s=tL(e,t);",
@@ -100,14 +143,20 @@ function harness({
   const modules = new Map([
     [appUrl, {
       npn(key, value) { persisted.set(key, value); },
-      Qfn(key, fallback) { return persisted.get(key) ?? fallback; }
+      Qfn(key, fallback) { return persisted.get(key) ?? fallback; },
+      BLr(key, value) { persisted.set(key, value); },
+      ILr(key, fallback) { return persisted.get(key) ?? fallback; }
     }],
     [sharedUrl, {
       _O: bus,
+      pqt(key, value) { persisted.set(key, value); },
+      rqt(key, fallback) { return persisted.get(key) ?? fallback; },
       Dkt(key, value) { persisted.set(key, value); },
       _kt(key, fallback) { return persisted.get(key) ?? fallback; },
       NKt(key, value) { persisted.set(key, value); },
-      CKt(key, fallback) { return persisted.get(key) ?? fallback; }
+      CKt(key, fallback) { return persisted.get(key) ?? fallback; },
+      d1t(key, value) { persisted.set(key, value); },
+      t1t(key, fallback) { return persisted.get(key) ?? fallback; }
     }],
     [persistedUrl, {
       b(key, value) { persisted.set(key, value); },
@@ -184,6 +233,42 @@ test("26.928 split persistence aliases resolve through app-shared", async () => 
   assert.equal(result.hidHandlers, 1);
   assert.equal(lab.persisted.get(detectionKey), true);
   assert.equal(lab.sourceReads(), 2);
+});
+
+test("26.930 split persistence aliases resolve through app-shared", async () => {
+  const lab = harness({ splitFactoryLatest: true });
+  const result = await lab.run();
+
+  assert.equal(result.ready, true);
+  assert.equal(result.detected, true);
+  assert.equal(result.nativeEventBus, true);
+  assert.equal(result.hidHandlers, 1);
+  assert.equal(lab.persisted.get(detectionKey), true);
+  assert.equal(lab.sourceReads(), 2);
+});
+
+test("26.1007 split persistence aliases resolve through app-shared", async () => {
+  const lab = harness({ splitFactoryNext: true });
+  const result = await lab.run();
+
+  assert.equal(result.ready, true);
+  assert.equal(result.detected, true);
+  assert.equal(result.nativeEventBus, true);
+  assert.equal(result.hidHandlers, 1);
+  assert.equal(lab.persisted.get(detectionKey), true);
+  assert.equal(lab.sourceReads(), 2);
+});
+
+test("26.1016 inline persistence factory resolves from app-initial", async () => {
+  const lab = harness({ inlineFactoryCurrent: true });
+  const result = await lab.run();
+
+  assert.equal(result.ready, true);
+  assert.equal(result.detected, true);
+  assert.equal(result.nativeEventBus, true);
+  assert.equal(result.hidHandlers, 1);
+  assert.equal(lab.persisted.get(detectionKey), true);
+  assert.equal(lab.sourceReads(), 1);
 });
 
 test("older separate persisted signal and event-bus assets still work", async () => {
@@ -448,4 +533,94 @@ test("26.928 command runner follows Qt to the imported Ce dispatcher", async () 
 
   assert.equal(JSON.stringify(result), JSON.stringify({ ok: true, action: "command" }));
   assert.deepEqual(calls, [["composer.submit", "codex_micro_hid"]]);
+});
+
+async function verifyRecentCommandRunner({ version, bridgeSource, initialExports }) {
+  const bridgeUrl = `app://-/assets/codex-micro-bridge-${version}.js`;
+  const layoutUrl = `app://-/assets/codex-micro-layout-${version}.js`;
+  const commandsUrl = `app://-/assets/codex-micro-commands-${version}.js`;
+  const initialUrl = `app://-/assets/app-initial-${version}.js`;
+  const runtimeUrl = `app://-/assets/rolldown-runtime-${version}.js`;
+  const calls = [];
+  const dispatcher = (command, source) => {
+    calls.push([command, source]);
+    return true;
+  };
+  const modules = new Map([
+    [layoutUrl, {
+      layout(id) {
+        return id === "CODEX"
+          ? { id, action: { type: "command", command: "composer.submit" } }
+          : { id };
+      }
+    }],
+    [commandsUrl, { n: () => ({ requiredAccess: null }) }],
+    [initialUrl, Object.fromEntries(initialExports.map((name) => [name, dispatcher]))],
+    [runtimeUrl, { n: () => {} }]
+  ]);
+  const context = {
+    document: {
+      querySelectorAll() {
+        return [bridgeUrl, layoutUrl, commandsUrl, initialUrl, runtimeUrl].map((src) => ({ src }));
+      }
+    },
+    performance: { getEntriesByType() { return []; } },
+    fetch: async (url) => ({ text: async () => url === bridgeUrl ? bridgeSource : "" }),
+    __mockImport: async (url) => modules.get(url) || {},
+    Map,
+    Set,
+    Object,
+    URL
+  };
+  const bridge = new DispatchHarness(context);
+  bridge.enableMicroRuntime = async () => ({ ready: true });
+
+  const result = await bridge.runKeycap("CODEX");
+
+  assert.equal(JSON.stringify(result), JSON.stringify({ ok: true, action: "command" }));
+  assert.deepEqual(calls, [["composer.submit", "codex_micro_hid"]]);
+}
+
+test("26.930 command runner follows $t to the imported we dispatcher", async () => {
+  await verifyRecentCommandRunner({
+    version: "26.930",
+    bridgeSource: [
+      'import{XAn as we}from"./app-initial-26.930.js";',
+      'import{n as G}from"./codex-micro-commands-26.930.js";',
+      'function $t(e,t,n){return G(t)?.requiredAccess!=null&&!e.get(flag)?!1:we(t,n)}',
+      'if(f?.type==="command"){!$t(r,f.command,"codex_micro_hid")&&warn()}',
+      'let voice=we(command,"codex_micro_hid");'
+    ].join(""),
+    initialExports: ["XAn"]
+  });
+});
+
+test("26.1007 command runner follows en to the imported he dispatcher", async () => {
+  await verifyRecentCommandRunner({
+    version: "26.1007",
+    bridgeSource: [
+      'import{n as e}from"./rolldown-runtime-26.1007.js";',
+      'import{BBn as he}from"./app-initial-26.1007.js";',
+      'import{n as K}from"./codex-micro-commands-26.1007.js";',
+      'function en(e,t,r){return K(t)?.requiredAccess!=null&&!e.get(flag)?!1:he(t,r)}',
+      'if(c?.type==="command"){!en(r,c.command,"codex_micro_hid")&&warn()}',
+      'let voice=he(command,"codex_micro_hid");'
+    ].join(""),
+    initialExports: ["BBn"]
+  });
+});
+
+test("26.1016 command runner follows en to the imported Ee dispatcher", async () => {
+  await verifyRecentCommandRunner({
+    version: "26.1016",
+    bridgeSource: [
+      'import{n as e}from"./rolldown-runtime-26.1016.js";',
+      'import{n4n as Ee}from"./app-initial-26.1016.js";',
+      'import{n as K}from"./codex-micro-commands-26.1016.js";',
+      'function en(e,t,r){return K(t)?.requiredAccess!=null&&!e.get(flag)?!1:Ee(t,r)}',
+      'if(c?.type==="command"){!en(r,c.command,"codex_micro_hid")&&warn()}',
+      'let voice=Ee(command,"codex_micro_hid");'
+    ].join(""),
+    initialExports: ["n4n"]
+  });
 });
