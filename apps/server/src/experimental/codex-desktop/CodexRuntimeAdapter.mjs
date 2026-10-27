@@ -759,7 +759,23 @@ export class CodexRuntimeAdapter {
     if (action === "stop") {
       const requestedThreadKey = stripDesktopConversationId(payload.conversationId);
       if (requestedThreadKey) await this.desktopBridge.activateThread(requestedThreadKey);
-      const before = await this.desktopBridge.snapshot();
+      const submissions = [...(this.desktopSubmissionsInFlight || [])];
+      if (submissions.length > 0) {
+        await Promise.race([
+          Promise.allSettled(submissions),
+          new Promise((resolve) => setTimeout(resolve, 7000))
+        ]);
+      }
+      let before = await this.desktopBridge.snapshot();
+      if (!before.working) {
+        const startDeadline = Date.now() + 3000;
+        while (Date.now() < startDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          before = await this.desktopBridge.snapshot();
+          if (requestedThreadKey && before.activeThreadKey !== requestedThreadKey) break;
+          if (before.working) break;
+        }
+      }
       if (!before.working) {
         return { ok: true, metadata: { noop: true, reason: "no-active-desktop-task" } };
       }
@@ -789,6 +805,19 @@ export class CodexRuntimeAdapter {
   }
 
   async startDesktopRun(input) {
+    this.desktopSubmissionsInFlight ??= new Set();
+    let releaseSubmission;
+    const submission = new Promise((resolve) => { releaseSubmission = resolve; });
+    this.desktopSubmissionsInFlight.add(submission);
+    try {
+      return await this.startDesktopRunNow(input);
+    } finally {
+      releaseSubmission();
+      this.desktopSubmissionsInFlight.delete(submission);
+    }
+  }
+
+  async startDesktopRunNow(input) {
     const content = input.content || input.prompt || input.message;
     if (!content) throw new Error("Codex Desktop prompt is empty.");
     await this.ensureDesktopBridgeReady();

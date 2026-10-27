@@ -1188,7 +1188,58 @@ export class CodexDesktopBridge {
 
   async stop() {
     await this.ensureConnected();
-    const result = await this.evaluate(`(async () => {
+    const startedAt = Date.now();
+    let state = await this.readStopControlState();
+    while (state.count === 0 && Date.now() - startedAt < 10_000) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      state = await this.readStopControlState();
+    }
+    if (state.count !== 1) {
+      throw new Error(`Codex Desktop stop failed: ${state.count === 0 ? "stop-control-not-found" : "stop-control-ambiguous"}.`);
+    }
+
+    const controls = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (state.count !== 1) {
+        throw new Error(`Codex Desktop stop failed: ${state.count === 0 ? "stop-control-not-found" : "stop-control-ambiguous"}.`);
+      }
+      controls.push(state.control);
+      await this.clickPoint(state.x, state.y);
+
+      const settleDeadline = Date.now() + 2500;
+      let absentSince;
+      while (Date.now() < settleDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        state = await this.readStopControlState();
+        if (state.count > 1) {
+          throw new Error("Codex Desktop stop failed: stop-control-ambiguous.");
+        }
+        if (state.count === 0) {
+          absentSince ??= Date.now();
+          if (Date.now() - absentSince >= 1500) {
+            const result = {
+              ok: true,
+              control: controls[0],
+              controls,
+              clicks: controls.length,
+              confirmed: true,
+              mechanism: "native-cdp-click"
+            };
+            this.onEvent({ type: "task.stopped", payload: result });
+            return result;
+          }
+          continue;
+        }
+        absentSince = undefined;
+        if (Date.now() - (settleDeadline - 2500) >= 250) break;
+      }
+    }
+    throw new Error("Codex Desktop stop failed: stop-not-confirmed.");
+  }
+
+  async readStopControlState() {
+    await this.ensureConnected();
+    return this.evaluate(`(() => {
       const visible = (element) => {
         const style = getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -1212,31 +1263,17 @@ export class CodexDesktopBridge {
             /(^|\\s)(stop|interrupt|cancel generation|stop generating|zatrzymaj|przerwij|anuluj)(\\s|$)/i
               .test(normalized(element))
           );
-      const readyDeadline = Date.now() + 10000;
-      let candidates = findCandidates();
-      while (candidates.length === 0 && Date.now() < readyDeadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        candidates = findCandidates();
-      }
-      if (candidates.length !== 1) {
-        return {
-          ok: false,
-          reason: candidates.length === 0 ? 'stop-control-not-found' : 'stop-control-ambiguous',
-          candidates: candidates.map(normalized).slice(0, 8)
-        };
-      }
-      const control = normalized(candidates[0]);
-      candidates[0].click();
-      const stoppedDeadline = Date.now() + 8000;
-      while (Date.now() < stoppedDeadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        if (findCandidates().length === 0) return { ok: true, control, confirmed: true };
-      }
-      return { ok: false, reason: 'stop-not-confirmed', candidates: findCandidates().map(normalized).slice(0, 8) };
-    })()`, Math.max(this.requestTimeoutMs, 20_000));
-    if (!result.ok) throw new Error(`Codex Desktop stop failed: ${result.reason}.`);
-    this.onEvent({ type: "task.stopped", payload: result });
-    return result;
+      const candidates = findCandidates();
+      const candidate = candidates[0];
+      const rect = candidate?.getBoundingClientRect();
+      return {
+        count: candidates.length,
+        control: candidate ? normalized(candidate) : undefined,
+        candidates: candidates.map(normalized).slice(0, 8),
+        x: rect ? rect.left + rect.width / 2 : undefined,
+        y: rect ? rect.top + rect.height / 2 : undefined
+      };
+    })()`);
   }
 
   async sendHid(key, act) {
